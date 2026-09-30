@@ -864,34 +864,45 @@ fn setup_custom_fonts(ctx: &egui::Context) {
     let windows_dir = std::env::var_os("WINDIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
-    let font_candidates = [
-        windows_dir.join("Fonts").join("Deng.ttf"),
-        windows_dir.join("Fonts").join("simhei.ttf"),
-        windows_dir.join("Fonts").join("simsunb.ttf"),
-    ];
-
-    let Some(font_bytes) = font_candidates
-        .iter()
-        .find_map(|path| std::fs::read(path).ok())
-    else {
-        return;
-    };
+    let fonts_dir = windows_dir.join("Fonts");
 
     let mut fonts = egui::FontDefinitions::default();
-    fonts.font_data.insert(
-        "windows-cjk".to_owned(),
-        egui::FontData::from_owned(font_bytes).into(),
-    );
-    fonts
-        .families
-        .get_mut(&egui::FontFamily::Proportional)
-        .expect("egui proportional font family should exist")
-        .insert(0, "windows-cjk".to_owned());
-    fonts
-        .families
-        .get_mut(&egui::FontFamily::Monospace)
-        .expect("egui monospace font family should exist")
-        .insert(0, "windows-cjk".to_owned());
+
+    // Primary Latin / UI font (Segoe UI is standard on Windows)
+    if let Ok(segoe_bytes) = std::fs::read(fonts_dir.join("segoeui.ttf")) {
+        fonts.font_data.insert(
+            "segoe-ui".to_owned(),
+            egui::FontData::from_owned(segoe_bytes).into(),
+        );
+        if let Some(prop) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
+            prop.insert(0, "segoe-ui".to_owned());
+        }
+    }
+
+    // Fallback CJK font for Chinese characters
+    let cjk_candidates = [
+        fonts_dir.join("msyh.ttc"),
+        fonts_dir.join("msyh.ttf"),
+        fonts_dir.join("Deng.ttf"),
+        fonts_dir.join("simhei.ttf"),
+        fonts_dir.join("simsun.ttc"),
+        fonts_dir.join("simsunb.ttf"),
+    ];
+
+    if let Some(cjk_bytes) = cjk_candidates.iter().find_map(|p| std::fs::read(p).ok()) {
+        fonts.font_data.insert(
+            "windows-cjk".to_owned(),
+            egui::FontData::from_owned(cjk_bytes).into(),
+        );
+        // Important: PUSH to the back as a fallback so it doesn't override English/Latin glyphs!
+        if let Some(prop) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
+            prop.push("windows-cjk".to_owned());
+        }
+        if let Some(mono) = fonts.families.get_mut(&egui::FontFamily::Monospace) {
+            mono.push("windows-cjk".to_owned());
+        }
+    }
+
     ctx.set_fonts(fonts);
 }
 
@@ -1797,3 +1808,24 @@ impl AirCardApp {
         });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_setup_custom_fonts() {
+        let ctx = egui::Context::default();
+        setup_custom_fonts(&ctx);
+        // egui compiles font textures during run()
+        let _ = ctx.run(Default::default(), |ctx| {
+            ctx.fonts_mut(|fonts| {
+                let w1 = fonts.glyph_width(&egui::FontId::proportional(14.0), 'A');
+                let w2 = fonts.glyph_width(&egui::FontId::proportional(14.0), '中');
+                assert!(w1 > 0.0);
+                assert!(w2 > 0.0);
+            });
+        });
+    }
+}
+
