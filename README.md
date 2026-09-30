@@ -117,3 +117,12 @@ The compiled binary will be in `target\release\aircard.exe`.
 ## Credits
 - Core exploit based on `airlift` (AirTraffic sync escape).
 - Theme format inspired by [Cowabunga](https://github.com/leminlimez/Cowabunga) and [Nugget](https://github.com/leminlimez/Nugget).
+
+- ## Support
+
+If you find AirCard useful, you can support future development:
+
+- **TON**: `UQB5jbOhep98IvgKjCIsJ1hHGRh2iWkacAZh9jW2DMIVSWZm`
+- **USDT (TRC20)**: `TLiVnkPZ7mVKwCD9RfE28uVTFk6sD6rux2`
+- **USDT / BNB (BEP20)**: `0x8EA94e79e47FafBCE10E65342D875c86d1019541`
+
