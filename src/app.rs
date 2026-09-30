@@ -1026,6 +1026,7 @@ impl eframe::App for AirCardApp {
                     .inner_margin(egui::Margin::symmetric(20, 10)),
             )
             .show(ctx, |ui| {
+                // Row 1: Title, Tabs, Language
                 ui.horizontal(|ui| {
                     ui.label(
                         egui::RichText::new("AirCard")
@@ -1046,14 +1047,9 @@ impl eframe::App for AirCardApp {
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let mut next_language = self.language;
-                        ui.label(
-                            egui::RichText::new(language.text("Language"))
-                                .size(11.0)
-                                .color(md3::ON_SURFACE_VARIANT),
-                        );
                         egui::ComboBox::from_id_salt("language_combo")
                             .selected_text(language.option_label(next_language))
-                            .width(125.0)
+                            .width(130.0)
                             .show_ui(ui, |ui| {
                                 ui.selectable_value(
                                     &mut next_language,
@@ -1072,90 +1068,106 @@ impl eframe::App for AirCardApp {
                             self.status_msg = self.language.text("Language changed.").to_string();
                         }
 
-                        ui.add_space(4.0);
-                        if m3_button_outlined(ui, language.text("Refresh")) {
-                            self.refresh_devices();
-                        }
-                        ui.add_space(4.0);
-                        let controls_enabled = !self.is_busy && !self.scanning_syslog;
-                        let mut next_mode = self.connection_mode;
-                        ui.add_enabled_ui(controls_enabled, |ui| {
-                            egui::ComboBox::from_id_salt("connection_mode_combo")
-                                .selected_text(language.text(next_mode.label()))
-                                .width(145.0)
-                                .show_ui(ui, |ui| {
-                                    for mode in ConnectionMode::ALL {
-                                        ui.selectable_value(
-                                            &mut next_mode,
-                                            mode,
-                                            language.text(mode.label()),
-                                        );
-                                    }
-                                });
-                        });
-                        if next_mode != self.connection_mode {
-                            self.connection_mode = next_mode;
-                            self.add_log(format!(
-                                "Transport mode changed to {}.",
-                                self.connection_mode.label()
-                            ));
-                            self.status_msg = format!(
-                                "{}: {}",
-                                language.text("Transport mode"),
-                                language.text(self.connection_mode.label())
-                            );
-                        }
-
-                        ui.add_space(4.0);
-                        let mut next_udid = self.selected_udid.clone();
-                        let selected_label = self
-                            .devices
-                            .iter()
-                            .find(|device| Some(&device.udid) == self.selected_udid.as_ref())
-                            .map(|device| format!("{} [{}]", device.name, device.transport_summary()))
-                            .unwrap_or_else(|| language.text("No device").to_string());
-                        ui.add_enabled_ui(controls_enabled && !self.devices.is_empty(), |ui| {
-                            egui::ComboBox::from_id_salt("device_selector_combo")
-                                .selected_text(selected_label)
-                                .width(185.0)
-                                .show_ui(ui, |ui| {
-                                    for device in &self.devices {
-                                        ui.selectable_value(
-                                            &mut next_udid,
-                                            Some(device.udid.clone()),
-                                            format!("{} [{}]", device.name, device.transport_summary()),
-                                        );
-                                    }
-                                });
-                        });
-                        if next_udid != self.selected_udid {
-                            self.selected_udid = next_udid;
-                            if let Some(selected) = self.selected_udid.clone() {
-                                self.add_log(format!("Selected device: {}", selected));
-                            }
-                        }
-
-                        ui.add_space(4.0);
-                        let connection_ready = self.selected_transport_available();
-                        draw_status_dot(
-                            ui,
-                            if connection_ready { md3::SUCCESS } else { md3::ERROR },
-                        );
                         ui.label(
-                            egui::RichText::new(if connection_ready {
-                                language.text("Ready")
-                            } else {
-                                language.text("Unavailable")
-                            })
-                                .size(12.0)
-                                .color(if connection_ready {
-                                    md3::ON_SURFACE
-                                } else {
-                                    md3::ON_SURFACE_VARIANT
-                                }),
-                        )
-                        .on_hover_text(&self.apple_status);
+                            egui::RichText::new(language.text("Language"))
+                                .size(11.0)
+                                .color(md3::ON_SURFACE_VARIANT),
+                        );
                     });
+                });
+
+                ui.add_space(8.0);
+
+                // Row 2: Device selector, Transport mode, Refresh, Connection status
+                ui.horizontal(|ui| {
+                    let connection_ready = self.selected_transport_available();
+                    draw_status_dot(
+                        ui,
+                        if connection_ready { md3::SUCCESS } else { md3::ERROR },
+                    );
+                    ui.label(
+                        egui::RichText::new(if connection_ready {
+                            language.text("Ready")
+                        } else {
+                            language.text("Unavailable")
+                        })
+                        .size(12.0)
+                        .color(if connection_ready {
+                            md3::ON_SURFACE
+                        } else {
+                            md3::ON_SURFACE_VARIANT
+                        }),
+                    )
+                    .on_hover_text(&self.apple_status);
+
+                    ui.add_space(10.0);
+
+                    let controls_enabled = !self.is_busy && !self.scanning_syslog;
+
+                    let mut next_udid = self.selected_udid.clone();
+                    let selected_label = self
+                        .devices
+                        .iter()
+                        .find(|device| Some(&device.udid) == self.selected_udid.as_ref())
+                        .map(|device| format!("{} [{}]", device.name, device.transport_summary()))
+                        .unwrap_or_else(|| language.text("No device").to_string());
+
+                    ui.add_enabled_ui(controls_enabled && !self.devices.is_empty(), |ui| {
+                        egui::ComboBox::from_id_salt("device_selector_combo")
+                            .selected_text(selected_label)
+                            .width(220.0)
+                            .show_ui(ui, |ui| {
+                                for device in &self.devices {
+                                    ui.selectable_value(
+                                        &mut next_udid,
+                                        Some(device.udid.clone()),
+                                        format!("{} [{}]", device.name, device.transport_summary()),
+                                    );
+                                }
+                            });
+                    });
+                    if next_udid != self.selected_udid {
+                        self.selected_udid = next_udid;
+                        if let Some(selected) = self.selected_udid.clone() {
+                            self.add_log(format!("Selected device: {}", selected));
+                        }
+                    }
+
+                    ui.add_space(6.0);
+
+                    let mut next_mode = self.connection_mode;
+                    ui.add_enabled_ui(controls_enabled, |ui| {
+                        egui::ComboBox::from_id_salt("connection_mode_combo")
+                            .selected_text(language.text(next_mode.label()))
+                            .width(160.0)
+                            .show_ui(ui, |ui| {
+                                for mode in ConnectionMode::ALL {
+                                    ui.selectable_value(
+                                        &mut next_mode,
+                                        mode,
+                                        language.text(mode.label()),
+                                    );
+                                }
+                            });
+                    });
+                    if next_mode != self.connection_mode {
+                        self.connection_mode = next_mode;
+                        self.add_log(format!(
+                            "Transport mode changed to {}.",
+                            self.connection_mode.label()
+                        ));
+                        self.status_msg = format!(
+                            "{}: {}",
+                            language.text("Transport mode"),
+                            language.text(self.connection_mode.label())
+                        );
+                    }
+
+                    ui.add_space(6.0);
+
+                    if m3_button_outlined(ui, language.text("Refresh")) {
+                        self.refresh_devices();
+                    }
                 });
             });
 
