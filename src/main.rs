@@ -16,8 +16,8 @@ mod wallet_backup;
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([980.0, 660.0])
-            .with_min_inner_size([860.0, 580.0])
+            .with_inner_size([1000.0, 640.0])
+            .with_min_inner_size([880.0, 560.0])
             .with_title("AirCard v1.2.2"),
         ..Default::default()
     };
