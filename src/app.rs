@@ -917,7 +917,7 @@ fn setup_custom_theme(ctx: &egui::Context) {
     visuals.window_corner_radius = 16.into();
     visuals.menu_corner_radius = 12.into();
 
-    visuals.widgets.noninteractive.corner_radius = 10.into();
+    visuals.widgets.noninteractive.corner_radius = 12.into();
     visuals.widgets.noninteractive.bg_fill = md3::SURFACE_CONTAINER;
     visuals.widgets.noninteractive.bg_stroke = egui::Stroke::NONE;
     visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0_f32, md3::ON_SURFACE);
@@ -925,20 +925,20 @@ fn setup_custom_theme(ctx: &egui::Context) {
     visuals.widgets.inactive.bg_fill = md3::SURFACE_CONTAINER_HIGH;
     visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
     visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0_f32, md3::ON_SURFACE_VARIANT);
-    visuals.widgets.inactive.corner_radius = 10.into();
+    visuals.widgets.inactive.corner_radius = 12.into();
 
     visuals.widgets.hovered.bg_fill = md3::SURFACE_CONTAINER_HIGHEST;
     visuals.widgets.hovered.bg_stroke = egui::Stroke::NONE;
     visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0_f32, md3::ON_SURFACE);
-    visuals.widgets.hovered.corner_radius = 10.into();
+    visuals.widgets.hovered.corner_radius = 12.into();
 
     visuals.widgets.active.bg_fill = md3::PRIMARY_CONTAINER;
     visuals.widgets.active.bg_stroke = egui::Stroke::NONE;
     visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0_f32, md3::ON_PRIMARY_CONTAINER);
-    visuals.widgets.active.corner_radius = 10.into();
+    visuals.widgets.active.corner_radius = 12.into();
 
     visuals.widgets.open.bg_fill = md3::SURFACE_CONTAINER_HIGHEST;
-    visuals.widgets.open.corner_radius = 10.into();
+    visuals.widgets.open.corner_radius = 12.into();
     visuals.widgets.open.bg_stroke = egui::Stroke::NONE;
 
     visuals.selection.bg_fill = md3::PRIMARY_CONTAINER;
@@ -983,12 +983,30 @@ fn m3_button_tonal(ui: &mut egui::Ui, label: &str) -> bool {
 
 fn m3_button_outlined(ui: &mut egui::Ui, label: &str) -> bool {
     let btn = egui::Button::new(
-        egui::RichText::new(label).size(12.0).color(md3::PRIMARY),
+        egui::RichText::new(label).size(12.5).color(md3::PRIMARY),
     )
     .fill(egui::Color32::TRANSPARENT)
-    .corner_radius(12)
+    .corner_radius(20)
     .stroke(egui::Stroke::new(1.0_f32, md3::OUTLINE));
     ui.add(btn).clicked()
+}
+
+fn m3_tab(ui: &mut egui::Ui, current: &mut AppTab, target: AppTab, label: &str) {
+    let selected = *current == target;
+    let (bg, fg) = if selected {
+        (md3::SECONDARY_CONTAINER, md3::ON_SECONDARY_CONTAINER)
+    } else {
+        (egui::Color32::TRANSPARENT, md3::ON_SURFACE_VARIANT)
+    };
+    let btn = egui::Button::new(
+        egui::RichText::new(label).size(12.5).color(fg),
+    )
+    .fill(bg)
+    .corner_radius(20)
+    .stroke(egui::Stroke::NONE);
+    if ui.add(btn).clicked() {
+        *current = target;
+    }
 }
 
 
@@ -1006,18 +1024,14 @@ impl eframe::App for AirCardApp {
             .frame(
                 egui::Frame::new()
                     .fill(md3::SURFACE)
-                    .inner_margin(egui::Margin::symmetric(16, 12)),
+                    .inner_margin(egui::Margin::symmetric(20, 10)),
             )
             .show(ctx, |ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(8.0, 0.0);
-                ui.spacing_mut().button_padding = egui::vec2(12.0, 6.0);
-
                 ui.horizontal(|ui| {
-                    // Title and version
                     ui.label(
                         egui::RichText::new("AirCard")
                             .strong()
-                            .size(17.0)
+                            .size(18.0)
                             .color(md3::ON_SURFACE),
                     );
                     ui.label(
@@ -1026,86 +1040,23 @@ impl eframe::App for AirCardApp {
                             .color(md3::ON_SURFACE_VARIANT),
                     );
 
-                    ui.add_space(8.0);
+                    ui.add_space(20.0);
+                    m3_tab(ui, &mut self.current_tab, AppTab::Wallet, language.text("Wallet"));
+                    m3_tab(ui, &mut self.current_tab, AppTab::Passcode, language.text("Passcode"));
+                    m3_tab(ui, &mut self.current_tab, AppTab::Help, language.text("Help"));
 
-                    // Segmented navigation tabs (all in exact same level and container)
-                    egui::Frame::new()
-                        .fill(md3::SURFACE_CONTAINER)
-                        .corner_radius(10)
-                        .inner_margin(egui::Margin::same(3))
-                        .show(ui, |ui| {
-                            ui.spacing_mut().item_spacing = egui::vec2(2.0, 0.0);
-                            for (tab, label) in [
-                                (AppTab::Wallet, language.text("Wallet")),
-                                (AppTab::Passcode, language.text("Passcode")),
-                                (AppTab::Help, language.text("Help")),
-                            ] {
-                                let selected = self.current_tab == tab;
-                                let bg = if selected {
-                                    md3::PRIMARY_CONTAINER
-                                } else {
-                                    egui::Color32::TRANSPARENT
-                                };
-                                let fg = if selected {
-                                    md3::ON_PRIMARY_CONTAINER
-                                } else {
-                                    md3::ON_SURFACE_VARIANT
-                                };
-                                let btn = egui::Button::new(
-                                    egui::RichText::new(label).size(12.0).color(fg),
-                                )
-                                .fill(bg)
-                                .corner_radius(7)
-                                .stroke(egui::Stroke::NONE);
-                                if ui.add(btn).clicked() {
-                                    self.current_tab = tab;
-                                }
-                            }
-                        });
-
-                    // Controls aligned strictly from right to left
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        // Language dropdown (compact, matching theme)
-                        let mut next_language = self.language;
-                        egui::ComboBox::from_id_salt("language_combo")
-                            .selected_text(language.option_label(next_language))
-                            .width(96.0)
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(
-                                    &mut next_language,
-                                    Language::English,
-                                    language.option_label(Language::English),
-                                );
-                                ui.selectable_value(
-                                    &mut next_language,
-                                    Language::SimplifiedChinese,
-                                    language.option_label(Language::SimplifiedChinese),
-                                );
-                            });
-                        if next_language != self.language {
-                            self.language = next_language;
-                            self.language.save();
-                            self.status_msg = self.language.text("Language changed.").to_string();
-                        }
-
-                        // Refresh button (matching fill and corner radius)
-                        let refresh_btn = egui::Button::new(
-                            egui::RichText::new(language.text("Refresh")).size(12.0).color(md3::ON_SURFACE),
-                        )
-                        .fill(md3::SURFACE_CONTAINER_HIGH)
-                        .corner_radius(10)
-                        .stroke(egui::Stroke::NONE);
-                        if ui.add(refresh_btn).clicked() {
+                        if m3_button_outlined(ui, language.text("Refresh")) {
                             self.refresh_devices();
                         }
 
-                        // Connection mode
+                        ui.add_space(6.0);
                         let controls_enabled = !self.is_busy && !self.scanning_syslog;
                         let mut next_mode = self.connection_mode;
                         ui.add_enabled_ui(controls_enabled, |ui| {
                             egui::ComboBox::from_id_salt("connection_mode_combo")
                                 .selected_text(language.text(next_mode.label()))
-                                .width(125.0)
+                                .width(135.0)
                                 .show_ui(ui, |ui| {
                                     for mode in ConnectionMode::ALL {
                                         ui.selectable_value(
@@ -1129,7 +1080,7 @@ impl eframe::App for AirCardApp {
                             );
                         }
 
-                        // Device selector
+                        ui.add_space(6.0);
                         let mut next_udid = self.selected_udid.clone();
                         let selected_label = self
                             .devices
@@ -1141,7 +1092,7 @@ impl eframe::App for AirCardApp {
                         ui.add_enabled_ui(controls_enabled && !self.devices.is_empty(), |ui| {
                             egui::ComboBox::from_id_salt("device_selector_combo")
                                 .selected_text(selected_label)
-                                .width(170.0)
+                                .width(175.0)
                                 .show_ui(ui, |ui| {
                                     for device in &self.devices {
                                         ui.selectable_value(
@@ -1159,30 +1110,26 @@ impl eframe::App for AirCardApp {
                             }
                         }
 
-                        // Status badge (matching chip with exact same height and corner radius)
+                        ui.add_space(8.0);
                         let connection_ready = self.selected_transport_available();
-                        let status_color = if connection_ready { md3::SUCCESS } else { md3::ERROR };
-                        let status_label = if connection_ready {
-                            language.text("Ready")
-                        } else {
-                            language.text("Unavailable")
-                        };
-
-                        egui::Frame::new()
-                            .fill(md3::SURFACE_CONTAINER_HIGH)
-                            .corner_radius(10)
-                            .inner_margin(egui::Margin::symmetric(10, 6))
-                            .show(ui, |ui| {
-                                ui.spacing_mut().item_spacing = egui::vec2(5.0, 0.0);
-                                draw_status_dot(ui, status_color);
-                                ui.label(
-                                    egui::RichText::new(status_label)
-                                        .size(12.0)
-                                        .color(if connection_ready { md3::ON_SURFACE } else { md3::ON_SURFACE_VARIANT }),
-                                );
+                        draw_status_dot(
+                            ui,
+                            if connection_ready { md3::SUCCESS } else { md3::ERROR },
+                        );
+                        ui.label(
+                            egui::RichText::new(if connection_ready {
+                                language.text("Ready")
+                            } else {
+                                language.text("Unavailable")
                             })
-                            .response
-                            .on_hover_text(&self.apple_status);
+                            .size(12.0)
+                            .color(if connection_ready {
+                                md3::ON_SURFACE
+                            } else {
+                                md3::ON_SURFACE_VARIANT
+                            }),
+                        )
+                        .on_hover_text(&self.apple_status);
                     });
                 });
             });
@@ -1223,6 +1170,30 @@ impl eframe::App for AirCardApp {
                         .stroke(egui::Stroke::new(1.0_f32, if self.show_logs_window { md3::PRIMARY } else { md3::OUTLINE_VARIANT }));
                         if ui.add(btn).clicked() {
                             self.show_logs_window = !self.show_logs_window;
+                        }
+
+                        ui.add_space(8.0);
+
+                        let mut next_language = self.language;
+                        egui::ComboBox::from_id_salt("language_combo_bottom")
+                            .selected_text(language.option_label(next_language))
+                            .width(105.0)
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut next_language,
+                                    Language::English,
+                                    language.option_label(Language::English),
+                                );
+                                ui.selectable_value(
+                                    &mut next_language,
+                                    Language::SimplifiedChinese,
+                                    language.option_label(Language::SimplifiedChinese),
+                                );
+                            });
+                        if next_language != self.language {
+                            self.language = next_language;
+                            self.language.save();
+                            self.status_msg = self.language.text("Language changed.").to_string();
                         }
                     });
                 });
