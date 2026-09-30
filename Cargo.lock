@@ -138,7 +138,7 @@ dependencies = [
 
 [[package]]
 name = "aircard"
-version = "1.2.2"
+version = "1.2.4"
 dependencies = [
  "anyhow",
  "base64",
