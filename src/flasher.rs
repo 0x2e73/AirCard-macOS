@@ -189,6 +189,44 @@ pub fn recover_books(udid: &str, mode: ConnectionMode) -> Result<()> {
     pending.complete()
 }
 
+fn replacement_assets(
+    skin_png: &[u8],
+    skin_pdf: &[u8],
+    originals: &[(String, Vec<u8>)],
+) -> Result<crate::protected_files::FileBytes> {
+    let skin = image::load_from_memory_with_format(skin_png, image::ImageFormat::Png)?;
+    originals
+        .iter()
+        .map(|(name, original)| {
+            ensure!(
+                CARD_ARTWORK_ASSETS.contains(&name.as_str()),
+                "Unexpected artwork asset"
+            );
+            let bytes = if name.ends_with(".pdf") {
+                skin_pdf.to_vec()
+            } else {
+                let original =
+                    image::load_from_memory_with_format(original, image::ImageFormat::Png)?;
+                // Issuers can store a 1536x969 image under an @2x filename.
+                // Match the actual saved dimensions, not an inferred scale.
+                if (skin.width(), skin.height()) == (original.width(), original.height()) {
+                    skin_png.to_vec()
+                } else {
+                    let mut output = std::io::Cursor::new(Vec::new());
+                    skin.resize_exact(
+                        original.width(),
+                        original.height(),
+                        image::imageops::FilterType::Lanczos3,
+                    )
+                    .write_to(&mut output, image::ImageFormat::Png)?;
+                    output.into_inner()
+                }
+            };
+            Ok((name.clone(), bytes))
+        })
+        .collect()
+}
+
 pub fn flash_wallet_skin<F, L>(
     udid: &str,
     mode: ConnectionMode,
@@ -209,18 +247,10 @@ where
     let hash = capture_original_card(udid, mode, card_hash, &mut log)?;
     let dir = format!("/var/mobile/Library/Passes/Cards/{hash}.pkpass");
     let (_, originals) = load_original_assets(udid, &hash)?;
-    let mut png2 = std::io::Cursor::new(Vec::new());
-    image::load_from_memory(skin_png)?
-        .resize_exact(1024, 646, image::imageops::FilterType::Lanczos3)
-        .write_to(&mut png2, image::ImageFormat::Png)?;
-    let candidates = [
-        (CARD_ARTWORK_ASSETS[0], skin_png),
-        (CARD_ARTWORK_ASSETS[1], png2.get_ref().as_slice()),
-        (CARD_ARTWORK_ASSETS[2], skin_pdf),
-    ];
-    let items: Vec<_> = candidates
-        .into_iter()
-        .filter(|(name, _)| originals.iter().any(|(saved, _)| saved == name))
+    let replacements = replacement_assets(skin_png, skin_pdf, &originals)?;
+    let items: Vec<_> = replacements
+        .iter()
+        .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
         .collect();
     progress(1, 3, "Writing card artwork...");
     write_wallet_files(udid, mode, &dir, &items, &mut log)?;
@@ -337,6 +367,26 @@ pub fn probe_device<L: FnMut(&str)>(udid: &str, mode: ConnectionMode, mut log: L
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn replacement_matches_saved_dimensions_and_only_saved_assets() {
+        fn png(width: u32, height: u32) -> Vec<u8> {
+            let mut output = std::io::Cursor::new(Vec::new());
+            image::DynamicImage::new_rgb8(width, height)
+                .write_to(&mut output, image::ImageFormat::Png)
+                .unwrap();
+            output.into_inner()
+        }
+        let skin = png(1536, 969);
+        for (width, height) in [(1536, 969), (1024, 646)] {
+            let originals = vec![(CARD_ARTWORK_ASSETS[1].into(), png(width, height))];
+            let replacements = replacement_assets(&skin, b"unused PDF", &originals).unwrap();
+            assert_eq!(replacements.len(), 1);
+            assert_eq!(replacements[0].0, CARD_ARTWORK_ASSETS[1]);
+            let decoded = image::load_from_memory(&replacements[0].1).unwrap();
+            assert_eq!((decoded.width(), decoded.height()), (width, height));
+        }
+    }
+
     #[test]
     fn writer_only_accepts_known_wallet_assets() {
         let dir = "/var/mobile/Library/Passes/Cards/d64fKk0kyHWP11IWV2GRLud4XQk=.pkpass";

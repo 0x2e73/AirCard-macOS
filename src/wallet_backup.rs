@@ -179,11 +179,34 @@ pub fn capture_original_card<L>(
     udid: &str,
     connection_mode: ConnectionMode,
     card_hash: &str,
-    mut log: L,
+    log: L,
 ) -> Result<String>
 where
     L: FnMut(&str),
 {
+    capture_original_card_asset(
+        udid,
+        connection_mode,
+        card_hash,
+        CARD_ARTWORK_ASSETS[1],
+        log,
+    )
+}
+
+/// Explicit diagnostic selection; never infer that a failed export means an
+/// asset is absent, or try another file while recovery is outstanding.
+pub fn capture_original_card_asset<L: FnMut(&str)>(
+    udid: &str,
+    connection_mode: ConnectionMode,
+    card_hash: &str,
+    asset: &str,
+    mut log: L,
+) -> Result<String> {
+    ensure!(
+        CARD_ARTWORK_ASSETS.contains(&asset),
+        "Unsupported artwork filename"
+    );
+    PendingBooks::ensure_clear(udid)?;
     let path = backup_path(udid, card_hash)?;
     if path.try_exists()? {
         let backup = OriginalCard::load(&path, udid, card_hash)
@@ -203,7 +226,9 @@ where
         }
     }
     let Some(resolved) = resolved else {
-        log("Direct AFC access is unavailable. Using journaled AirTraffic export and return.");
+        log(&format!(
+            "Direct AFC access is unavailable. Exporting {asset} with journaled recovery."
+        ));
         let pending = PendingBooks::create(udid, snapshot_books(&afc)?)?;
         let exported = (|| -> Result<OriginalCard> {
             for candidate in card_hash_candidates(card_hash) {
@@ -213,10 +238,10 @@ where
                     &session,
                     &afc,
                     &dir,
-                    // The 3x face is used by this iPhone class. Do not require
-                    // a PDF or 2x file that may not exist, and never write one
-                    // unless a previous verified manifest contains it.
-                    &[CARD_ARTWORK_ASSETS[0]],
+                    // Screen scale does not determine the issuer's asset
+                    // format. Only this explicitly selected file is exported;
+                    // an unsuccessful export does not prove another is absent.
+                    &[asset],
                     &mut log,
                 )?;
                 if assets.is_empty() {

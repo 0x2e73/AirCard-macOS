@@ -21,7 +21,11 @@ fn main() -> eframe::Result<()> {
     if args.first().is_some_and(|arg| {
         matches!(
             arg.as_str(),
-            "--probe-device" | "--recover-device" | "--device-log"
+            "--probe-device"
+                | "--recover-device"
+                | "--device-log"
+                | "--wallet-log"
+                | "--back-up-card"
         )
     }) {
         let result = (|| -> anyhow::Result<()> {
@@ -35,8 +39,25 @@ fn main() -> eframe::Result<()> {
                 "Selected {} ({}, iOS {}) over USB",
                 phone.name, phone.product_type, phone.ios_version
             );
-            if args[0] == "--device-log" {
-                scanner::diagnostic_log(&phone.udid)
+            if args[0] == "--device-log" || args[0] == "--wallet-log" {
+                scanner::diagnostic_log(&phone.udid, args[0] == "--wallet-log")
+            } else if args[0] == "--back-up-card" {
+                anyhow::ensure!(
+                    matches!(args.len(), 2 | 3),
+                    "Usage: --back-up-card <exact pass ID> [artwork filename]"
+                );
+                let _guard = safety::OperationGuard::acquire(&phone.udid)?;
+                safety::PendingBooks::ensure_clear(&phone.udid)?;
+                wallet_backup::capture_original_card_asset(
+                    &phone.udid,
+                    device::ConnectionMode::Usb,
+                    &args[1],
+                    args.get(2)
+                        .map(String::as_str)
+                        .unwrap_or(wallet_backup::CARD_ARTWORK_ASSETS[1]),
+                    |message| println!("{message}"),
+                )?;
+                Ok(())
             } else if args[0] == "--recover-device" {
                 flasher::recover_books(&phone.udid, device::ConnectionMode::Usb)
             } else {
@@ -74,7 +95,7 @@ fn main() -> eframe::Result<()> {
     }
     if args.iter().any(|arg| arg == "--help") {
         println!(
-            "AirCard {}\n  --preview         Open without connecting to an iPhone\n  --check-runtime   Check Apple libraries without contacting devices\n  --smoke-test      Open a preview window and close automatically\n  --probe-device    Test a temporary file on exactly one connected USB iPhone\n  --recover-device  Resume pending recovery on exactly one connected USB iPhone",
+            "AirCard {}\n  --preview         Open without connecting to an iPhone\n  --check-runtime   Check Apple libraries without contacting devices\n  --smoke-test      Open a preview window and close automatically\n  --probe-device    Test a temporary file on exactly one connected USB iPhone\n  --recover-device  Resume pending recovery on exactly one connected USB iPhone\n  --back-up-card ID [FILE]  Back up one known artwork asset (default: 2x PNG)\n  --wallet-log      Read Wallet/transfer diagnostics for 90 seconds\n  --device-log      Read transfer diagnostics for 90 seconds",
             env!("CARGO_PKG_VERSION")
         );
         return Ok(());

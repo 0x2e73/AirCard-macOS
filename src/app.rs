@@ -792,7 +792,7 @@ impl AirCardApp {
         self.task_rx = Some(rx);
         thread::spawn(move || {
             let result = recover_books(&udid, mode)
-                .map(|_| "Outstanding exported files returned; Books state restored. Use Restore Original separately to undo an applied skin.".into())
+                .map(|_| "Recovery finished; no outstanding exported files remain. Books state restored. Use Restore Original separately to undo an applied skin.".into())
                 .map_err(|error| format!("{error:#}"));
             let _ = tx.send(BackgroundTaskMessage::Done(result));
         });

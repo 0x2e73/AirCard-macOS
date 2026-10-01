@@ -36,13 +36,6 @@ pub fn is_valid_card_hash(h: &str) -> bool {
         return false;
     }
 
-    // Reject strings with multiple underscores or hyphens (typical of system asset/bundle names)
-    if trimmed.chars().filter(|&c| c == '_').count() > 1
-        || trimmed.chars().filter(|&c| c == '-').count() > 2
-    {
-        return false;
-    }
-
     // Reject obvious system identifiers, bundle IDs and common keywords
     let lower = trimmed.to_lowercase();
     if lower.contains("mobileasset")
@@ -204,10 +197,12 @@ static DESC_RE: LazyLock<Regex> = LazyLock::new(|| {
 
 static CARD_REGEXES: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     vec![
-        Regex::new(r"/(?:Cards|Passes/Cards)/([A-Za-z0-9+/_-]{27,44})(?:\.pkpass|\.cache|\.pkcache|/|\s|\x22|'|\)|,|$)").unwrap(),
-        Regex::new(r"/([A-Za-z0-9+/_-]{27,44})\.(?:pkpass|cache|pkcache)").unwrap(),
-        Regex::new(r"(?:^|[^A-Za-z0-9+/_-])([A-Za-z0-9+/_-]{27}=)(?:$|[^A-Za-z0-9+/_-])").unwrap(),
-        Regex::new(r"(?i)(?:card[_\s]?(?:hash|id)|pass[_\s]?(?:hash|id)|unique[_\s]?id)\s*[:=]\s*['\x22]?([A-Za-z0-9+=_-]{27,44})").unwrap(),
+        // Preserve the exact path component, including its original padding.
+        // A generic base64 value in a Wallet log may identify an account,
+        // transaction or resource rather than a pass directory.
+        Regex::new(r"/(?:Cards|Passes/Cards)/([A-Za-z0-9+_-]{27,43}={0,2})\.(?:pkpass|cache|pkcache)(?:/|\s|\x22|'|\)|,|$)").unwrap(),
+        Regex::new(r"Dashboard loading \([^)]*\): (?:for )?([A-Za-z0-9+_-]{27,43}={0,2})(?:, pass feature\b| - )").unwrap(),
+        Regex::new(r"(?i)(?:^|[^A-Za-z0-9_])(?:card[_\s]?(?:hash|id)|pass[_\s]?(?:hash|id))\s*[:=]\s*['\x22]?([A-Za-z0-9+_-]{27,43}={0,2})(?:$|[\s'\x22,;)])").unwrap(),
     ]
 });
 
@@ -225,6 +220,11 @@ pub fn extract_card_name_from_line(line: &str) -> Option<String> {
 
 pub fn extract_card_hash_from_line(line: &str) -> Option<String> {
     let lower = line.to_lowercase();
+    // AirTraffic echoes requested paths, which is not evidence that Wallet
+    // has that pass. Never discover cards from our own transfer diagnostics.
+    if lower.contains("airlift-") || lower.contains("atc(") || lower.contains("atairlock") {
+        return None;
+    }
     let has_wallet = WALLET_KEYWORDS.iter().any(|k| lower.contains(k));
     if !has_wallet {
         return None;
@@ -240,11 +240,7 @@ pub fn extract_card_hash_from_line(line: &str) -> Option<String> {
                 .trim_matches(['\'', '"'])
                 .trim_end_matches(['.', ',']);
             if is_valid_card_hash(h) {
-                let mut norm = h.to_string();
-                if norm.len() == 27 {
-                    norm.push('=');
-                }
-                return Some(norm);
+                return Some(h.to_string());
             }
         }
     }
@@ -346,7 +342,7 @@ where
 }
 
 /// Bounded diagnostics for the temporary-file probe; no card discovery/storage.
-pub fn diagnostic_log(udid: &str) -> Result<()> {
+pub fn diagnostic_log(udid: &str, wallet: bool) -> Result<()> {
     let session = ActiveDeviceSession::open(Some(udid), ConnectionMode::Usb)?;
     let service = session.start_service("com.apple.syslog_relay")?;
     let libs = &session.libs;
@@ -370,9 +366,12 @@ pub fn diagnostic_log(udid: &str) -> Result<()> {
                 if matches!(*b, b'\n' | 0) {
                     let text = String::from_utf8_lossy(&line);
                     let lower = text.to_ascii_lowercase();
-                    if ["airlock", "airlift", "aircard-probe", "moveitem", "atc("]
-                        .iter()
-                        .any(|s| lower.contains(s))
+                    let transfer_event =
+                        ["airlock", "airlift", "aircard-probe", "moveitem", "atc("]
+                            .iter()
+                            .any(|s| lower.contains(s));
+                    if transfer_event
+                        || (wallet && WALLET_KEYWORDS.iter().any(|s| lower.contains(s)))
                     {
                         println!("{text}");
                     }
@@ -405,12 +404,41 @@ mod tests {
         let line2 = "nanopassd: Accessing /var/mobile/Library/Passes/Cards/d64fKk0kyHWP11IWV2GRLud4XQk.pkpass";
         assert_eq!(
             extract_card_hash_from_line(line2),
-            Some("d64fKk0kyHWP11IWV2GRLud4XQk=".to_string())
+            Some("d64fKk0kyHWP11IWV2GRLud4XQk".to_string())
         );
 
         // Dummy/unrelated lines should be ignored
         let dummy = "passd: Using dummy hash hwAtAmHKYwsQrJbT5cTNDsaxVME=";
         assert_eq!(extract_card_hash_from_line(dummy), None);
+    }
+
+    #[test]
+    fn scanner_requires_a_pass_path_or_explicit_card_identifier() {
+        use base64::Engine;
+        for line in [
+            "passd: account token d64fKk0kyHWP11IWV2GRLud4XQk= loaded",
+            "Wallet: resource uniqueID = d64fKk0kyHWP11IWV2GRLud4XQk=",
+            "passd: /tmp/d64fKk0kyHWP11IWV2GRLud4XQk=.pkpass",
+            "unrelated: passID = d64fKk0kyHWP11IWV2GRLud4XQk=",
+            "atc(ATFoundation): /Passes/Cards/d64fKk0kyHWP11IWV2GRLud4XQk=.pkpass/image.png",
+        ] {
+            assert_eq!(extract_card_hash_from_line(line), None, "{line}");
+        }
+        assert_eq!(
+            extract_card_hash_from_line("PassbookUIService(PassKitUI): Dashboard loading (0x123): for d64fKk0kyHWP11IWV2GRLud4XQk=, pass feature unknown").as_deref(),
+            Some("d64fKk0kyHWP11IWV2GRLud4XQk=")
+        );
+        let sha256 = base64::engine::general_purpose::URL_SAFE
+            .encode((0u8..32).map(|i| i.wrapping_mul(9)).collect::<Vec<_>>());
+        for hash in [
+            "d64fKk0kyHWP11IWV2GRLud4XQk",
+            "d64fKk0kyHWP11IWV2GRLud4XQk=",
+            sha256.trim_end_matches('='),
+            &sha256,
+        ] {
+            let line = format!("passd: /var/mobile/Library/Passes/Cards/{hash}.pkpass/image.png");
+            assert_eq!(extract_card_hash_from_line(&line).as_deref(), Some(hash));
+        }
     }
 
     #[test]

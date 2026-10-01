@@ -42,11 +42,13 @@ There is no built-in artwork gallery. Use **Choose Image…** to import a PNG, J
 2. Connect the unlocked iPhone by USB and establish trust in Finder and on the iPhone.
 3. Open AirCard and refresh devices. Choose the correct iPhone and transport.
 4. Click **Scan**, open Wallet on the iPhone, and select the intended card. Stop scanning when its identifier appears.
-5. Click **Back Up Original**. Keep the iPhone connected and unlocked: if AFC cannot access the files directly, this operation temporarily exports `cardBackgroundCombined@3x.png` into Media, saves a local copy, and returns it. This targets the 3x card face used on the tested iPhone class, without requiring a possibly absent PDF or 2x image. Backup is not a read-only device operation. Only files saved in a validated original manifest are eligible for replacement.
+5. Click **Back Up Original**. Keep the iPhone connected and unlocked: if AFC cannot access the files directly, this operation temporarily exports `cardBackgroundCombined@2x.png` into Media, saves a local copy, and returns it. This asset was successfully backed up from the tested card; an iPhone's screen scale does not determine which artwork files its issuer supplies. Backup is not a read-only device operation. Only files saved in a validated original manifest are eligible for replacement.
 6. If backup succeeds, choose an image, adjust the crop, and click **Apply Card Skin**. Each card has its own backup and can be styled separately.
 7. After a successful verified write, close and reopen Wallet. **Restore Original** uses the saved original assets.
 
 If an operation fails, use **Recover Interrupted Operation** before trying again. It returns outstanding exported artwork before restoring the saved Books state. Keep recovery records and original backups; do not substitute another card's backup.
+
+A timeout does not establish that a file is absent: the move itself may have failed. Recovery reports when no exported files were found instead of claiming they were returned. The scanner preserves identifiers exactly as logged, accepts Wallet dashboard/pass events, and ignores generic base64 tokens and AirTraffic's echoes of requested paths. The Mac's Wallet cache may be stale and is not proof of the cards currently installed on an iPhone.
 
 ## Safety changes
 
@@ -76,7 +78,7 @@ Keep the backup directory. Diagnostic logs may contain device/card identifiers; 
 
 ## Development and validation
 
-The temporary-file probe passed on an iPhone 14 Pro Max (`iPhone15,3`) running iOS 26.6: create, overwrite with different bytes, export/read-back, return, a second read after return, and removal. The tracked Books state was restored. No Wallet artwork was changed during this test. This is narrower than a validated Wallet customization or a guarantee for other iOS versions.
+The temporary-file probe passed on an iPhone 14 Pro Max (`iPhone15,3`) running iOS 26.6: create, overwrite with different bytes, export/read-back, return, a second read after return, and removal. A subsequent Wallet backup successfully exported, validated, saved and returned a real card's `cardBackgroundCombined@2x.png`; exports of its 3x PNG and PDF timed out. The tracked Books state was restored. Applying a replacement design to that card is not yet validated. These checks do not guarantee compatibility with other cards or iOS versions.
 
 ```sh
 cargo fmt --all -- --check
@@ -93,6 +95,8 @@ Explicit device checks (these perform temporary writes on the connected iPhone):
 cargo run --locked -- --probe-device
 cargo run --locked -- --recover-device
 ```
+
+For explicit diagnostics, `--back-up-card <exact-pass-ID> [artwork-filename]` uses the same locks, recovery and immutable backup validation as the UI. Its default is the 2x PNG; only the three known artwork filenames are accepted. It never overwrites an existing backup or automatically retries another file after an error. `--wallet-log` and `--device-log` read a bounded 90-second device log stream without changing Wallet files; their output can include private identifiers.
 
 The probe uses one randomly named file in `Library/Caches` to exercise writing, overwriting, export/read-back, return and removal. It also snapshots and restores the tracked Books sync files. It does not access Wallet passes. Exactly one unlocked USB iPhone must be connected.
 

@@ -239,8 +239,9 @@ fn save_copy(root: &Path, plan: &ExportPlan, index: usize, data: &[u8]) -> Resul
 
 /// Return the very same exported files using move semantics, preserving their
 /// contents and file attributes. Never remove or rewrite an outstanding export.
-fn return_exports(io: &mut impl ExportIo, root: &Path, plan: &ExportPlan) -> Result<()> {
+fn return_exports(io: &mut impl ExportIo, root: &Path, plan: &ExportPlan) -> Result<usize> {
     let mut moves = Vec::new();
+    let mut handled = 0;
     for (i, leaf) in plan.leaves.iter().enumerate() {
         let exported = plan.recovered(i);
         if io.exists(&exported)? {
@@ -250,6 +251,7 @@ fn return_exports(io: &mut impl ExportIo, root: &Path, plan: &ExportPlan) -> Res
                     !io.exists(&exported)?,
                     "Temporary file or cache was not removed"
                 );
+                handled += 1;
                 continue;
             }
             // Best-effort salvage must not prevent moving the original home if
@@ -264,8 +266,9 @@ fn return_exports(io: &mut impl ExportIo, root: &Path, plan: &ExportPlan) -> Res
         }
     }
     if moves.is_empty() {
-        return Ok(());
+        return Ok(handled);
     }
+    handled += moves.len();
     io.cleanup(&plan.return_token)?;
     io.stage(&plan.dir, &plan.return_token)?;
     moves.insert(0, link_move(&plan.return_token));
@@ -277,7 +280,7 @@ fn return_exports(io: &mut impl ExportIo, root: &Path, plan: &ExportPlan) -> Res
             remains |= io.exists(&plan.recovered(i))?;
         }
         if !remains {
-            return Ok(());
+            return Ok(handled);
         }
         ensure!(
             Instant::now() < deadline,
@@ -330,7 +333,7 @@ fn execute_export(io: &mut impl ExportIo, root: &Path, plan: &ExportPlan) -> Res
                     break;
                 }
                 bail!(
-                    "Timed out waiting for exported files. The file may be absent or the move may not have completed; recovery data retained."
+                    "No exported artwork appeared within 15 seconds. Check the exact card ID and artwork filename. A missing file and an unsuccessful move cannot be distinguished here; recovery data retained."
                 );
             }
             std::thread::sleep(Duration::from_millis(250));
@@ -349,19 +352,21 @@ fn execute_export(io: &mut impl ExportIo, root: &Path, plan: &ExportPlan) -> Res
     // failed. The helper has exited; no detached host thread keeps writing.
     let returned = return_exports(io, root, plan);
     match (read_result, returned) {
-        (Ok(data), Ok(())) => {
+        (Ok(data), Ok(_)) => {
             cleanup_plan(io, root, plan)?;
             Ok(data)
         }
         (read, returned) => bail!(
-            "Export incomplete. Read: {}. Return: {}. Recovery records and exported files were retained; use Recover Interrupted Operation.",
+            "Export incomplete. Read: {}. Recovery: {}. Recovery records retained; use Recover Interrupted Operation.",
             read.err()
                 .map(|e| format!("{e:#}"))
                 .unwrap_or_else(|| "saved".into()),
-            returned
-                .err()
-                .map(|e| format!("{e:#}"))
-                .unwrap_or_else(|| "returned".into())
+            match returned {
+                Ok(0) => "no exported files were found to return".into(),
+                Ok(count) if plan.discard => format!("{count} temporary/cache file(s) removed"),
+                Ok(count) => format!("{count} exported file(s) returned"),
+                Err(error) => format!("{error:#}"),
+            }
         ),
     }
 }
@@ -436,7 +441,10 @@ pub fn recover_export<L: FnMut(&str)>(
     }
     let plan = ExportPlan::load(&root, &session.udid)?;
     let mut io = DeviceIo { session, afc, log };
-    return_exports(&mut io, &root, &plan)?;
+    let count = return_exports(&mut io, &root, &plan)?;
+    (io.log)(&format!(
+        "Recovery handled {count} outstanding exported file(s)."
+    ));
     cleanup_plan(&mut io, &root, &plan)
 }
 
@@ -575,6 +583,16 @@ mod tests {
         io.fail_read = true;
         assert!(execute_export(&mut io, root.path(), &p).is_err());
         assert_eq!(io.files, before);
+    }
+    #[test]
+    fn recovery_does_not_claim_a_return_when_nothing_was_exported() {
+        let root = tempfile::tempdir().unwrap();
+        let p = plan();
+        let mut io = phone(&p);
+        let before = io.files.clone();
+        assert_eq!(return_exports(&mut io, root.path(), &p).unwrap(), 0);
+        assert_eq!(io.files, before);
+        assert_eq!(io.moves, 0);
     }
     #[test]
     fn recovery_plan_cannot_target_other_files_or_devices() {
