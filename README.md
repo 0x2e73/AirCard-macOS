@@ -2,7 +2,7 @@
 
 A native Rust client for previewing and changing Apple Wallet card artwork, derived from [Lumid-Off/AirCard-Windows](https://github.com/Lumid-Off/AirCard-Windows). The Apple Silicon macOS build uses Apple's system frameworks and the local `usbmuxd` socket. Windows support is retained; CI also defines an Intel Mac build.
 
-**A running Mac app does not establish iPhone compatibility.** This port has not been validated by writing to an iPhone 14 Pro Max / iOS 26.6. Apple's standard AFC file service normally exposes the Media directory, not Wallet's private artwork directory. If the original artwork cannot be read, this version deliberately refuses to apply a skin. There is no “continue without backup” option and no additional exploit to move private files out for backup.
+**Experimental device operations.** Standard AFC cannot read Wallet artwork directly. This version uses AirTraffic to move selected artwork into Media, save immutable local copies, and return the files to Wallet. Backup therefore performs temporary device writes. A durable recovery record is saved before moving anything. Only artwork present in a validated original backup can be replaced; there is no skip-backup switch. A successful temporary-file probe does not guarantee that a particular Wallet card can be customized.
 
 ## Run on macOS
 
@@ -42,21 +42,21 @@ There is no built-in artwork gallery. Use **Choose Image…** to import a PNG, J
 2. Connect the unlocked iPhone by USB and establish trust in Finder and on the iPhone.
 3. Open AirCard and refresh devices. Choose the correct iPhone and transport.
 4. Click **Scan**, open Wallet on the iPhone, and select the intended card. Stop scanning when its identifier appears.
-5. Click **Back Up Original**. This only reads device files and saves them on the computer. It must obtain all three original artwork files (`@3x.png`, `@2x.png`, and `.pdf`) and verify the local backup. A card that lacks any of these files is also blocked; supporting absent original assets safely requires a different restore mechanism.
+5. Click **Back Up Original**. Keep the iPhone connected and unlocked: if AFC cannot access the files directly, this operation temporarily exports `cardBackgroundCombined@3x.png` into Media, saves a local copy, and returns it. This targets the 3x card face used on the tested iPhone class, without requiring a possibly absent PDF or 2x image. Backup is not a read-only device operation. Only files saved in a validated original manifest are eligible for replacement.
 6. If backup succeeds, choose an image, adjust the crop, and click **Apply Card Skin**. Each card has its own backup and can be styled separately.
 7. After a successful verified write, close and reopen Wallet. **Restore Original** uses the saved original assets.
 
-If backup is refused, stop: this device/card cannot currently be modified with this port's backup requirement. Do not delete recovery files or substitute an unrelated card's backup to enable writes.
+If an operation fails, use **Recover Interrupted Operation** before trying again. It returns outstanding exported artwork before restoring the saved Books state. Keep recovery records and original backups; do not substitute another card's backup.
 
 ## Safety changes
 
-- Original artwork is stored in a complete versioned manifest bound to the device and canonical card identifier. Existing backups are never overwritten. The original PNGs must decode and the PDF must have a header and end marker; this is not a full PDF parser or a guarantee that Apple will accept the restored file.
+- Original artwork is stored in a versioned manifest bound to the device and canonical card identifier. Schema 3 permits a subset of known artwork files, and the writer only replaces that subset; this does not claim that unexported files are absent. Existing backups are never overwritten. The original PNGs must decode and the PDF must have a header and end marker; this is not a full PDF parser or a guarantee that Apple will accept the restored file.
 - Backups are written atomically, synchronized to disk, and read back before use. Incomplete legacy backups from the Windows version are not accepted.
 - Books sync files are saved to a durable recovery journal **before** any staging or device write. The snapshot is limited to the six tracked Books files; it is not a complete backup of the Books library.
-- A pending recovery journal blocks subsequent writes. **Restore Books** restores and verifies those tracked files, then clears the journal. It does not undo a partially changed card face; use **Restore Original** separately afterwards. Failed-operation staging files may remain on the phone.
+- A pending recovery journal blocks subsequent writes. **Recover Interrupted Operation** returns outstanding exports first, then restores the tracked Books files. It does not undo an already applied skin; use **Restore Original** separately afterwards. Exported originals are never deleted during recovery. Failed-operation staging files can remain on the phone.
 - AirTraffic runs in a bounded child process, which is stopped and reaped on timeout before cleanup. A separate lock prevents recovery from racing a helper that outlived the UI. Already-dispatched iPhone operations cannot be cancelled with certainty.
 - Cross-process locks serialize changes per iPhone. Write destinations are restricted to known Wallet artwork/cache names, and path components are validated.
-- No automatic write retries after partial failure. Artwork and Books restoration are checked by reading bytes back. Cache failures are reported instead of being silently ignored.
+- No automatic artwork-write retries after partial failure. Artwork is verified through export/read-back; direct reads of private paths are no longer assumed to work. Returning an export is checked by observing its removal from Media after the return operation; this cannot guarantee cancellation of already queued iPhone work. Books files are verified by AFC read-back. Derived Wallet caches are exported and removed, rather than overwritten with corrupt bytes.
 - Passcode themes can be imported and previewed; **keypad writes are disabled** until there is a complete backup/restore implementation. Theme archive sizes are bounded.
 
 These changes reduce avoidable failures; they do not make the underlying AirTraffic exploit safe or transactional. A disconnect, framework incompatibility, concurrent Finder sync, or device crash can still leave partial changes. Close other device-management/sync apps before a deliberate write and keep an alternative way to pay.
@@ -69,12 +69,14 @@ On Windows: `%LOCALAPPDATA%\AirCard\`.
 - `cards.json`: discovered card names and identifiers.
 - `settings.json`: UI language.
 - `wallet-backups/v2/`: immutable original artwork manifests.
-- `recovery/`: unfinished Books recovery journals.
+- `recovery/`: unfinished Books and export recovery journals; `exported-files/` retains immutable local recovery copies even after a successful operation.
 - `locks/`: operation lock files (the OS releases locks when the owning process exits).
 
 Keep the backup directory. Diagnostic logs may contain device/card identifiers; review them before sharing.
 
 ## Development and validation
+
+The temporary-file probe passed on an iPhone 14 Pro Max (`iPhone15,3`) running iOS 26.6: create, overwrite with different bytes, export/read-back, return, a second read after return, and removal. The tracked Books state was restored. No Wallet artwork was changed during this test. This is narrower than a validated Wallet customization or a guarantee for other iOS versions.
 
 ```sh
 cargo fmt --all -- --check
@@ -84,6 +86,15 @@ cargo check --locked
 ./dist/AirCard.app/Contents/MacOS/aircard --check-runtime
 AIRCARD_SMOKE_SCREENSHOT="$PWD/dist/smoke-test.png" ./dist/AirCard.app/Contents/MacOS/aircard --smoke-test
 ```
+
+Explicit device checks (these perform temporary writes on the connected iPhone):
+
+```sh
+cargo run --locked -- --probe-device
+cargo run --locked -- --recover-device
+```
+
+The probe uses one randomly named file in `Library/Caches` to exercise writing, overwriting, export/read-back, return and removal. It also snapshots and restores the tracked Books sync files. It does not access Wallet passes. Exactly one unlocked USB iPhone must be connected.
 
 Default tests use temporary files and do not contact an iPhone. Four inherited integration tests are explicitly ignored because they access real devices or the user's card database. Only run ignored tests deliberately on a test setup. CI builds artifacts for Apple Silicon, Intel Mac, and Windows, without publishing releases automatically.
 

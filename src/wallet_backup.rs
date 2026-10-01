@@ -5,7 +5,9 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 
 use crate::afc::AfcClient;
+use crate::airlift::{restore_books, snapshot_books};
 use crate::device::{ActiveDeviceSession, ConnectionMode};
+use crate::safety::PendingBooks;
 use crate::safety::{atomic_create, file_key, read_bounded};
 
 pub const CARD_ARTWORK_ASSETS: [&str; 3] = [
@@ -72,7 +74,7 @@ struct OriginalCard {
 impl OriginalCard {
     fn validate(&self, udid: &str, hash: &str) -> Result<()> {
         ensure!(
-            self.schema == 2 && self.udid.eq_ignore_ascii_case(udid),
+            matches!(self.schema, 2 | 3) && self.udid.eq_ignore_ascii_case(udid),
             "Original backup belongs to another device or format"
         );
         ensure!(
@@ -81,20 +83,18 @@ impl OriginalCard {
             "Original backup belongs to another Wallet card"
         );
         ensure!(
-            self.assets.len() == CARD_ARTWORK_ASSETS.len(),
-            "Original backup is incomplete"
+            !self.assets.is_empty()
+                && self.assets.len() <= CARD_ARTWORK_ASSETS.len()
+                && (self.schema == 3 || self.assets.len() == CARD_ARTWORK_ASSETS.len()),
+            "Original backup is empty or incomplete"
         );
-        for asset in CARD_ARTWORK_ASSETS {
-            let matches: Vec<_> = self
-                .assets
-                .iter()
-                .filter(|(name, _)| name == asset)
-                .collect();
+        let mut seen = std::collections::HashSet::new();
+        for (asset, bytes) in &self.assets {
             ensure!(
-                matches.len() == 1,
-                "Original backup is missing or duplicates {asset}"
+                CARD_ARTWORK_ASSETS.contains(&asset.as_str()) && seen.insert(asset),
+                "Original backup has an unexpected or duplicated asset: {asset}"
             );
-            validate_artwork(asset, &matches[0].1)?;
+            validate_artwork(asset, bytes)?;
         }
         Ok(())
     }
@@ -139,8 +139,8 @@ fn card_hash_candidates(card_hash: &str) -> Vec<String> {
         format!("{trimmed}="),
         format!("{trimmed}=="),
     ];
-    candidates.sort();
-    candidates.dedup();
+    let mut seen = std::collections::HashSet::new();
+    candidates.retain(|s| seen.insert(s.clone()));
     candidates
 }
 
@@ -188,7 +188,7 @@ where
     if path.try_exists()? {
         let backup = OriginalCard::load(&path, udid, card_hash)
             .context("The existing backup is incomplete or damaged; refusing to replace it")?;
-        log("Verified all three original artwork assets in the existing backup.");
+        log("Verified the saved originals. Only backed-up artwork files may be replaced.");
         return Ok(backup.resolved_hash);
     }
     let session = ActiveDeviceSession::open(Some(udid), connection_mode)?;
@@ -203,9 +203,64 @@ where
         }
     }
     let Some(resolved) = resolved else {
-        bail!(
-            "Original Wallet artwork is not accessible through Apple's file service. No complete backup can be made, so this operation was stopped before any iPhone file was changed. This iOS/device combination is not supported for safe artwork changes."
-        );
+        log("Direct AFC access is unavailable. Using journaled AirTraffic export and return.");
+        let pending = PendingBooks::create(udid, snapshot_books(&afc)?)?;
+        let exported = (|| -> Result<OriginalCard> {
+            for candidate in card_hash_candidates(card_hash) {
+                card_identity(&candidate)?;
+                let dir = format!("/var/mobile/Library/Passes/Cards/{candidate}.pkpass");
+                let assets = crate::protected_files::export_files(
+                    &session,
+                    &afc,
+                    &dir,
+                    // The 3x face is used by this iPhone class. Do not require
+                    // a PDF or 2x file that may not exist, and never write one
+                    // unless a previous verified manifest contains it.
+                    &[CARD_ARTWORK_ASSETS[0]],
+                    &mut log,
+                )?;
+                if assets.is_empty() {
+                    continue;
+                }
+                // Schema 3 records only successfully exported files. The writer
+                // must never touch an asset missing from this manifest.
+                let backup = OriginalCard {
+                    schema: 3,
+                    udid: udid.into(),
+                    identity: card_identity(card_hash)?,
+                    resolved_hash: candidate,
+                    assets,
+                };
+                backup.validate(udid, card_hash)?;
+                atomic_create(&path, &serde_json::to_vec(&backup)?)?;
+                return OriginalCard::load(&path, udid, card_hash);
+            }
+            bail!(
+                "No original artwork was exported. Check the selected card; this AirTraffic operation did not establish compatibility."
+            )
+        })();
+        let books = restore_books(&afc, &pending.snapshot);
+        match (exported, books) {
+            (Ok(backup), Ok(())) => {
+                pending.complete()?;
+                log(&format!(
+                    "Saved {} original artwork file(s); each was returned to Wallet. Files without a backup will not be replaced.",
+                    backup.assets.len()
+                ));
+                return Ok(backup.resolved_hash);
+            }
+            (exported, books) => bail!(
+                "Original backup incomplete. Export: {}. Books restore: {}. Recovery records retained; use Recover Interrupted Operation.",
+                exported
+                    .err()
+                    .map(|e| format!("{e:#}"))
+                    .unwrap_or_else(|| "saved".into()),
+                books
+                    .err()
+                    .map(|e| format!("{e:#}"))
+                    .unwrap_or_else(|| "verified".into())
+            ),
+        }
     };
     let dir = format!("/var/mobile/Library/Passes/Cards/{resolved}.pkpass");
     let backup = capture_at(&path, udid, card_hash, &resolved, |asset| {
@@ -285,5 +340,29 @@ mod tests {
             card_identity(HASH).unwrap(),
             card_identity(HASH.trim_end_matches('=')).unwrap()
         );
+    }
+
+    #[test]
+    fn version_three_only_authorizes_the_assets_actually_saved() {
+        let backup = OriginalCard {
+            schema: 3,
+            udid: "phone".into(),
+            identity: card_identity(HASH).unwrap(),
+            resolved_hash: HASH.into(),
+            assets: vec![(
+                CARD_ARTWORK_ASSETS[0].into(),
+                artwork(CARD_ARTWORK_ASSETS[0]),
+            )],
+        };
+        assert!(backup.validate("phone", HASH).is_ok());
+        assert!(
+            !backup
+                .assets
+                .iter()
+                .any(|(name, _)| name == CARD_ARTWORK_ASSETS[1])
+        );
+        let mut legacy = backup;
+        legacy.schema = 2;
+        assert!(legacy.validate("phone", HASH).is_err());
     }
 }

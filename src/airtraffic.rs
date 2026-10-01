@@ -38,6 +38,7 @@ struct SyncRequest {
     udid: String,
     transport: DeviceTransport,
     assets: Vec<(String, String)>,
+    parent_pid: u32,
 }
 
 /// Run the blocking private framework in a child process. A detached Rust
@@ -60,6 +61,7 @@ where
             .iter()
             .map(|(a, b)| (a.to_string(), b.to_string()))
             .collect(),
+        parent_pid: std::process::id(),
     };
     let mut output = tempfile::tempfile()?;
     let mut command = Command::new(std::env::current_exe()?);
@@ -147,6 +149,23 @@ pub fn run_worker() -> Result<()> {
         .read_to_end(&mut input)?;
     anyhow::ensure!(input.len() <= 1024 * 1024, "Helper request too large");
     let request: SyncRequest = serde_json::from_slice(&input)?;
+    #[cfg(unix)]
+    {
+        let parent_pid = request.parent_pid;
+        anyhow::ensure!(
+            unsafe { libc::getppid() } as u32 == parent_pid,
+            "AirTraffic parent exited before work started"
+        );
+        std::thread::spawn(move || {
+            loop {
+                if unsafe { libc::getppid() } as u32 != parent_pid {
+                    eprintln!("AirTraffic parent exited; stopping helper for recovery");
+                    std::process::exit(3);
+                }
+                sleep(Duration::from_millis(100));
+            }
+        });
+    }
     let _guard = crate::safety::OperationGuard::acquire(&format!("{}.airtraffic", request.udid))?;
     anyhow::ensure!(
         !request.assets.is_empty() && request.assets.len() <= 4,

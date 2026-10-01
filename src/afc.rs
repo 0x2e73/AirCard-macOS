@@ -242,12 +242,11 @@ impl AfcClient {
     }
 
     pub fn remove_path(&self, path: &str) -> Result<()> {
-        if !self.exists(path) {
-            return Ok(());
-        }
         let c_path = CString::new(path).context("Path contains null byte")?;
         let status = unsafe { (self.libs.afc_remove_path)(self.conn, c_path.as_ptr()) };
-        if status != 0 && self.exists(path) {
+        // Unlink directly: stat may follow a symlink outside Media and report
+        // it as invisible even though the link itself still needs removing.
+        if status != 0 && status != 8 {
             bail!("AFCRemovePath failed for {} with code {}", path, status);
         }
         Ok(())
@@ -300,7 +299,8 @@ impl AfcClient {
     }
 
     fn remove_tree_internal(&self, path: &str, depth: usize) -> Result<()> {
-        if depth > 32 || !self.exists(path) {
+        anyhow::ensure!(depth <= 32, "Staging directory is unexpectedly deep");
+        if !self.path_exists(path)? {
             return Ok(());
         }
 

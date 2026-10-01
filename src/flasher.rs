@@ -16,6 +16,17 @@ use crate::wallet_backup::{
 };
 
 fn validate_wallet_targets(target_dir: &str, items: &[(&str, &[u8])]) -> Result<()> {
+    if target_dir == crate::protected_files::PROBE_DIR {
+        crate::protected_files::validate_target(
+            target_dir,
+            &items.iter().map(|(s, _)| s.to_string()).collect::<Vec<_>>(),
+        )?;
+        ensure!(
+            items.iter().all(|(_, b)| !b.is_empty() && b.len() <= 4096),
+            "Invalid probe payload"
+        );
+        return Ok(());
+    }
     let component = target_dir
         .strip_prefix("/var/mobile/Library/Passes/Cards/")
         .context("Only Wallet artwork and its caches may be written")?;
@@ -86,7 +97,7 @@ where
     log("Books recovery backup saved to disk before writing.");
 
     let write_result = (|| -> Result<()> {
-        stage_streaming_zip(&session, &source, &archive)?;
+        let staged = stage_streaming_zip(&session, &source, &archive);
         ensure!(
             afc.path_exists(&format!("{source}/p0/p1/p2/link"))?,
             "Staging link missing"
@@ -97,6 +108,11 @@ where
                 "Staging artwork missing"
             );
         }
+        if let Err(error) = staged {
+            log(&format!(
+                "StreamingZip: {error:#}; staging objects verified."
+            ));
+        }
         afc.make_directory_recursive("Books/Sync")?;
         afc.write_file("Books/Sync/Books.plist", &books)?;
         let refs: Vec<_> = assets
@@ -104,14 +120,19 @@ where
             .map(|(id, dest)| (id.as_str(), dest.as_str()))
             .collect();
         sync_assets_via_airtraffic(udid, session.transport, &refs, &mut log)?;
+        let leaves: Vec<_> = items.iter().map(|(leaf, _)| *leaf).collect();
+        let exported =
+            crate::protected_files::export_files(&session, &afc, target_dir, &leaves, &mut log)?;
         for (leaf, expected) in items {
-            let actual = afc
-                .read_file(&format!("{target_dir}/{leaf}"))
+            let actual = &exported
+                .iter()
+                .find(|(name, _)| name == leaf)
                 .with_context(|| {
-                    format!("Cannot verify {leaf} after writing; the outcome is uncertain")
-                })?;
+                    format!("Written file {leaf} could not be exported for verification")
+                })?
+                .1;
             ensure!(
-                actual == *expected,
+                actual.as_slice() == *expected,
                 "Read-back verification failed for {leaf}"
             );
         }
@@ -143,7 +164,7 @@ where
             Ok(())
         }
         (write, restore) => bail!(
-            "Operation incomplete. Write: {}. Books restore: {}. Recovery backup retained; use Restore Books before another attempt.",
+            "Operation incomplete. Write: {}. Books restore: {}. Recovery backup retained; use Recover Interrupted Operation before another attempt.",
             write
                 .err()
                 .map(|e| format!("{e:#}"))
@@ -159,10 +180,11 @@ where
 pub fn recover_books(udid: &str, mode: ConnectionMode) -> Result<()> {
     let _guard = OperationGuard::acquire(udid)?;
     // A helper can outlive a crashed GUI. Do not race it during recovery.
-    let _worker_guard = OperationGuard::acquire(&format!("{udid}.airtraffic"))?;
+    drop(OperationGuard::acquire(&format!("{udid}.airtraffic"))?);
     let pending = PendingBooks::load(udid)?;
     let session = ActiveDeviceSession::open(Some(udid), mode)?;
     let afc = AfcClient::new(&session)?;
+    crate::protected_files::recover_export(&session, &afc, &mut |message| println!("{message}"))?;
     restore_books(&afc, &pending.snapshot)?;
     pending.complete()
 }
@@ -186,11 +208,20 @@ where
     progress(0, 3, "Backing up original artwork...");
     let hash = capture_original_card(udid, mode, card_hash, &mut log)?;
     let dir = format!("/var/mobile/Library/Passes/Cards/{hash}.pkpass");
-    let items = [
+    let (_, originals) = load_original_assets(udid, &hash)?;
+    let mut png2 = std::io::Cursor::new(Vec::new());
+    image::load_from_memory(skin_png)?
+        .resize_exact(1024, 646, image::imageops::FilterType::Lanczos3)
+        .write_to(&mut png2, image::ImageFormat::Png)?;
+    let candidates = [
         (CARD_ARTWORK_ASSETS[0], skin_png),
-        (CARD_ARTWORK_ASSETS[1], skin_png),
+        (CARD_ARTWORK_ASSETS[1], png2.get_ref().as_slice()),
         (CARD_ARTWORK_ASSETS[2], skin_pdf),
     ];
+    let items: Vec<_> = candidates
+        .into_iter()
+        .filter(|(name, _)| originals.iter().any(|(saved, _)| saved == name))
+        .collect();
     progress(1, 3, "Writing card artwork...");
     write_wallet_files(udid, mode, &dir, &items, &mut log)?;
     invalidate_wallet_caches(udid, mode, &hash, &mut progress, &mut log)?;
@@ -245,21 +276,61 @@ where
     let afc = AfcClient::new(&session)?;
     for (index, suffix) in [".cache", ".pkcache"].iter().enumerate() {
         let dir = format!("/var/mobile/Library/Passes/Cards/{hash}{suffix}");
-        if !afc.path_exists(&dir)? {
-            continue;
-        }
-        let mut items = Vec::new();
-        for leaf in ["FrontFace", "PlaceHolder", "Preview"] {
-            if afc.path_exists(&format!("{dir}/{leaf}"))? {
-                items.push((leaf, &b"corrupted"[..]));
-            }
-        }
-        if !items.is_empty() {
-            progress(index + 2, 3, "Refreshing Wallet artwork cache...");
-            write_wallet_files(udid, mode, &dir, &items, &mut *log)
-                .context("Artwork was written, but refreshing the Wallet cache failed")?;
-        }
+        progress(index + 2, 3, "Refreshing Wallet artwork cache...");
+        let pending = PendingBooks::create(udid, snapshot_books(&afc)?)?;
+        let removed = crate::protected_files::discard_files(
+            &session,
+            &afc,
+            &dir,
+            &crate::protected_files::CACHE_FILES,
+            log,
+        );
+        let restored = restore_books(&afc, &pending.snapshot);
+        removed.context("Artwork was written; cache cleanup needs recovery")?;
+        restored?;
+        pending.complete()?;
     }
+    Ok(())
+}
+
+/// Exercise write, overwrite, export, return, byte comparison and removal using
+/// only a randomly named file in Library/Caches; never touches a Wallet pass.
+pub fn probe_device<L: FnMut(&str)>(udid: &str, mode: ConnectionMode, mut log: L) -> Result<()> {
+    let _guard = OperationGuard::acquire(udid)?;
+    PendingBooks::ensure_clear(udid)?;
+    let leaf = format!("aircard-probe-{}.bin", crate::platform::random_hex()?);
+    let dir = crate::protected_files::PROBE_DIR;
+    log(&format!("Testing a disposable file only: {dir}/{leaf}"));
+    for payload in [
+        b"AirCard temporary round-trip probe A".as_slice(),
+        b"AirCard temporary round-trip probe B",
+    ] {
+        write_wallet_files(udid, mode, dir, &[(leaf.as_str(), payload)], &mut log)?;
+        let session = ActiveDeviceSession::open(Some(udid), mode)?;
+        let afc = AfcClient::new(&session)?;
+        let pending = PendingBooks::create(udid, snapshot_books(&afc)?)?;
+        log("Checking that the returned probe is still at its original path...");
+        let checked = crate::protected_files::export_files(&session, &afc, dir, &[&leaf], &mut log);
+        let restored = restore_books(&afc, &pending.snapshot);
+        let data = checked?;
+        restored?;
+        ensure!(
+            data.len() == 1 && data[0].1 == payload,
+            "The returned probe was not found at its original path; refusing Wallet operations"
+        );
+        pending.complete()?;
+    }
+    let session = ActiveDeviceSession::open(Some(udid), mode)?;
+    let afc = AfcClient::new(&session)?;
+    let pending = PendingBooks::create(udid, snapshot_books(&afc)?)?;
+    let removed = crate::protected_files::discard_files(&session, &afc, dir, &[&leaf], &mut log);
+    let restored = restore_books(&afc, &pending.snapshot);
+    removed?;
+    restored?;
+    pending.complete()?;
+    log(
+        "Probe passed: create, overwrite, export/read, return and removal verified; Books restored. Wallet files were not accessed.",
+    );
     Ok(())
 }
 

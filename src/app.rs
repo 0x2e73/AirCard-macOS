@@ -769,7 +769,7 @@ impl AirCardApp {
                 crate::wallet_backup::capture_original_card(&udid, mode, &hash, |message| {
                     let _ = tx.send(BackgroundTaskMessage::Log(message.into()));
                 })?;
-                Ok("Original artwork backup verified. No iPhone files were changed.".into())
+                Ok("Original artwork saved. Exported files were returned to Wallet; only backed-up files can be replaced.".into())
             })()
             .map_err(|error| format!("{error:#}"));
             let _ = tx.send(BackgroundTaskMessage::Done(result));
@@ -777,7 +777,9 @@ impl AirCardApp {
     }
 
     fn restore_books_state(&mut self) {
-        if !self.validate_selected_transport("Restore Books") || self.scanning_syslog {
+        if !self.validate_selected_transport("Recover Interrupted Operation")
+            || self.scanning_syslog
+        {
             return;
         }
         let Some(udid) = self.selected_udid.clone() else {
@@ -785,12 +787,12 @@ impl AirCardApp {
         };
         let mode = self.connection_mode;
         self.is_busy = true;
-        self.status_msg = "Restoring saved Books state...".into();
+        self.status_msg = "Returning exported files and restoring Books state...".into();
         let (tx, rx) = channel();
         self.task_rx = Some(rx);
         thread::spawn(move || {
             let result = recover_books(&udid, mode)
-                .map(|_| "Books state restored and verified. Wallet artwork is unchanged by this recovery.".into())
+                .map(|_| "Outstanding exported files returned; Books state restored. Use Restore Original separately to undo an applied skin.".into())
                 .map_err(|error| format!("{error:#}"));
             let _ = tx.send(BackgroundTaskMessage::Done(result));
         });
@@ -1443,26 +1445,26 @@ impl AirCardApp {
         if self.preview_only {
             ui.label("Preview mode: no iPhone connections or writes.");
         }
-        let pending = self
-            .selected_udid
-            .as_ref()
-            .is_some_and(|id| crate::safety::PendingBooks::path(id).exists());
+        let pending = self.selected_udid.as_ref().is_some_and(|id| {
+            crate::safety::PendingBooks::path(id).exists()
+                || crate::protected_files::recovery_path(id).exists()
+        });
         if pending {
             ui.colored_label(
                 md3::ERROR,
-                "An unfinished operation has a saved Books recovery backup.",
+                "An unfinished operation has recovery data. Return outstanding files before continuing.",
             );
             if ui
                 .add_enabled(
                     !self.is_busy && !self.scanning_syslog,
-                    egui::Button::new("Restore Books"),
+                    egui::Button::new("Recover Interrupted Operation"),
                 )
                 .clicked()
             {
                 self.restore_books_state();
             }
         }
-        ui.label("Applying a skin requires a complete, verified backup of the original artwork. Unsupported devices are blocked before writing.");
+        ui.label("Back up originals before applying. Backup may temporarily move files on the iPhone; keep it connected and unlocked.");
         if self.scanning_syslog {
             egui::Frame::new()
                 .fill(md3::TERTIARY_CONTAINER)
@@ -1675,7 +1677,7 @@ impl AirCardApp {
                 if ui.add_enabled(can_backup, egui::Button::new("Back Up Original")).clicked() {
                     self.back_up_original();
                 }
-                ui.label("Reads the original artwork and saves it on this computer before applying a skin.");
+                ui.label("Exports original artwork, saves a local copy and returns the files to Wallet. Only backed-up files can be replaced.");
                 ui.add_space(8.0);
                 let can_flash = !self.is_busy && !self.scanning_syslog && !pending && has_backup
                     && self.selected_transport_available()

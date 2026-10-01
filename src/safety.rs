@@ -52,6 +52,11 @@ fn sync_directory(path: &Path) -> Result<()> {
     Ok(())
 }
 
+pub fn remove_durable(path: &Path) -> Result<()> {
+    fs::remove_file(path)?;
+    sync_directory(path.parent().context("Recovery file has no parent")?)
+}
+
 pub struct OperationGuard {
     _file: File,
 }
@@ -96,8 +101,9 @@ impl PendingBooks {
 
     pub fn ensure_clear(udid: &str) -> Result<()> {
         ensure!(
-            !Self::path(udid).try_exists()?,
-            "An unfinished operation has a Books recovery backup. Use Restore Books before applying another change."
+            !Self::path(udid).try_exists()?
+                && !crate::protected_files::recovery_path(udid).try_exists()?,
+            "An unfinished operation has recovery data. Use Recover Interrupted Operation before another change."
         );
         Ok(())
     }
@@ -137,9 +143,11 @@ impl PendingBooks {
     }
 
     pub fn complete(&self) -> Result<()> {
-        let path = Self::path(&self.udid);
-        fs::remove_file(&path)?;
-        sync_directory(path.parent().unwrap())
+        ensure!(
+            !crate::protected_files::recovery_path(&self.udid).try_exists()?,
+            "Wallet export recovery must finish before clearing Books recovery"
+        );
+        remove_durable(&Self::path(&self.udid))
     }
 }
 

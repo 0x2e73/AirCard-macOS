@@ -345,6 +345,51 @@ where
     Ok(())
 }
 
+/// Bounded diagnostics for the temporary-file probe; no card discovery/storage.
+pub fn diagnostic_log(udid: &str) -> Result<()> {
+    let session = ActiveDeviceSession::open(Some(udid), ConnectionMode::Usb)?;
+    let service = session.start_service("com.apple.syslog_relay")?;
+    let libs = &session.libs;
+    let socket = unsafe { (libs.amd_service_connection_get_socket)(service) };
+    let result = (|| -> Result<()> {
+        crate::platform::set_receive_timeout(socket, std::time::Duration::from_millis(500))?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
+        let mut bytes = [0u8; 8192];
+        let mut line = Vec::new();
+        while std::time::Instant::now() < deadline {
+            let n = unsafe {
+                (libs.amd_service_connection_receive)(service, bytes.as_mut_ptr(), bytes.len())
+            };
+            if n == 0 {
+                break;
+            }
+            if n < 0 {
+                continue;
+            }
+            for b in &bytes[..n as usize] {
+                if matches!(*b, b'\n' | 0) {
+                    let text = String::from_utf8_lossy(&line);
+                    let lower = text.to_ascii_lowercase();
+                    if ["airlock", "airlift", "aircard-probe", "moveitem", "atc("]
+                        .iter()
+                        .any(|s| lower.contains(s))
+                    {
+                        println!("{text}");
+                    }
+                    line.clear();
+                } else if line.len() < 1024 * 1024 {
+                    line.push(*b);
+                }
+            }
+        }
+        Ok(())
+    })();
+    unsafe {
+        (libs.amd_service_connection_invalidate)(service);
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

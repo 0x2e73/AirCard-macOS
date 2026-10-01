@@ -1,6 +1,6 @@
 [package]
 name = "aircard"
-version = "1.3.0-macos.1"
+version = "1.3.0-macos.2"
 edition = "2024"
 rust-version = "1.89"
 description = "Native macOS and Windows AirCard client"
