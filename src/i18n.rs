@@ -85,6 +85,16 @@ impl Language {
             "Please enter or scan a target card hash." => "请输入或扫描目标卡片 Hash。",
             "Please choose a card skin image first." => "请先选择卡片皮肤图片。",
             "Crop position updated." => "裁切位置已更新。",
+            "Zoom" => "缩放",
+            "Reset crop" => "重置裁切",
+            "Adjusting crop..." => "正在调整裁切…",
+            "Wallet format (fixed)" => "钱包比例（固定）",
+            "Use Zoom below the preview to remove margins, then drag to position." => {
+                "使用预览下方的缩放去除边距，然后拖动调整位置。"
+            }
+            "Zoom to fill the frame; drag the image to position it." => {
+                "缩放以填满边框；拖动图片调整位置。"
+            }
             "Scanning syslog... Open Wallet or tap your card on iPhone." => {
                 "正在扫描 syslog... 请在 iPhone 上打开钱包并点击卡片。"
             }

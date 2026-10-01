@@ -102,6 +102,7 @@ pub struct AirCardApp {
     source_image: Option<DynamicImage>,
     source_texture: Option<egui::TextureHandle>,
     crop_focus: [f32; 2],
+    crop_zoom: f32,
     crop_dirty: bool,
     skin: Option<PreparedSkin>,
     scanning_syslog: bool,
@@ -161,6 +162,7 @@ impl AirCardApp {
             source_image: None,
             source_texture: None,
             crop_focus: [0.5, 0.5],
+            crop_zoom: 100.0,
             crop_dirty: false,
             skin: None,
             scanning_syslog: false,
@@ -205,6 +207,18 @@ impl AirCardApp {
 
         if app.apple_ready && !preview_only {
             app.refresh_devices();
+        }
+
+        if smoke && let Some(path) = std::env::var_os("AIRCARD_SMOKE_IMAGE") {
+            app.load_skin(&cc.egui_ctx, PathBuf::from(path));
+            if let Ok(value) = std::env::var("AIRCARD_SMOKE_ZOOM")
+                && let Ok(zoom) = value.parse::<f32>()
+                && zoom.is_finite()
+            {
+                app.crop_zoom = zoom.clamp(100.0, 300.0);
+                app.crop_dirty = true;
+                app.rebuild_skin_from_source();
+            }
         }
 
         app
@@ -341,20 +355,24 @@ impl AirCardApp {
             return;
         };
 
+        self.load_skin(ctx, path);
+    }
+
+    fn load_skin(&mut self, ctx: &egui::Context, path: PathBuf) {
         self.add_log(format!("Opening skin image: {}", path.display()));
         match image::open(&path) {
             Ok(source_image) => {
                 let source_width = source_image.width();
                 let source_height = source_image.height();
-                let skin = match PreparedSkin::from_image_with_focus(source_image.clone(), 0.5, 0.5)
-                {
-                    Ok(skin) => skin,
-                    Err(error) => {
-                        self.add_log(format!("Image preparation failed: {error:#}"));
-                        self.status_msg = format!("Could not prepare image: {error:#}");
-                        return;
-                    }
-                };
+                let skin =
+                    match PreparedSkin::from_image_with_crop(source_image.clone(), 0.5, 0.5, 1.0) {
+                        Ok(skin) => skin,
+                        Err(error) => {
+                            self.add_log(format!("Image preparation failed: {error:#}"));
+                            self.status_msg = format!("Could not prepare image: {error:#}");
+                            return;
+                        }
+                    };
                 let source_rgba = source_image.thumbnail(2048, 2048).to_rgba8();
                 let source_preview = egui::ColorImage::from_rgba_unmultiplied(
                     [source_rgba.width() as usize, source_rgba.height() as usize],
@@ -382,6 +400,7 @@ impl AirCardApp {
                 self.source_path = Some(path);
                 self.source_image = Some(source_image);
                 self.crop_focus = [0.5, 0.5];
+                self.crop_zoom = 100.0;
                 self.crop_dirty = false;
                 self.skin = Some(skin);
             }
@@ -397,16 +416,18 @@ impl AirCardApp {
             return;
         };
 
-        match PreparedSkin::from_image_with_focus(
+        match PreparedSkin::from_image_with_crop(
             source_image.clone(),
             self.crop_focus[0],
             self.crop_focus[1],
+            self.crop_zoom / 100.0,
         ) {
             Ok(skin) => {
                 self.add_log(format!(
-                    "Crop updated: focus ({:.2}, {:.2}), prepared PNG {:.1} KB",
+                    "Crop updated: focus ({:.2}, {:.2}), zoom {:.0}%, prepared PNG {:.1} KB",
                     self.crop_focus[0],
                     self.crop_focus[1],
+                    self.crop_zoom,
                     skin.png.len() as f32 / 1024.0,
                 ));
                 self.skin = Some(skin);
@@ -421,6 +442,12 @@ impl AirCardApp {
     }
 
     fn save_prepared_png(&mut self) {
+        if self.crop_dirty {
+            self.rebuild_skin_from_source();
+            if self.crop_dirty {
+                return;
+            }
+        }
         let Some(skin) = &self.skin else {
             return;
         };
@@ -506,6 +533,12 @@ impl AirCardApp {
     }
 
     fn flash_card(&mut self) {
+        if self.crop_dirty {
+            self.rebuild_skin_from_source();
+            if self.crop_dirty {
+                return;
+            }
+        }
         if !self.validate_selected_transport("Card flash") {
             return;
         }
@@ -1625,7 +1658,7 @@ impl AirCardApp {
                 );
                 ui.label(
                     egui::RichText::new(
-                        language.text("Drag inside the preview to reposition the crop."),
+                        language.text("Use Zoom below the preview to remove margins, then drag to position."),
                     )
                     .size(11.0)
                     .color(md3::ON_SURFACE_VARIANT),
@@ -1815,27 +1848,25 @@ impl AirCardApp {
                                 source_height,
                                 self.crop_focus[0],
                                 self.crop_focus[1],
+                                self.crop_zoom / 100.0,
                             );
                             let visible_width = crop_uv[2] - crop_uv[0];
                             let visible_height = crop_uv[3] - crop_uv[1];
-                            if rect.width() > 0.0 {
+                            if rect.width() > 0.0 && visible_width < 1.0 {
                                 self.crop_focus[0] = (self.crop_focus[0]
                                     - response.drag_motion().x / rect.width()
-                                        * (1.0 - visible_width))
+                                        * visible_width / (1.0 - visible_width))
                                     .clamp(0.0, 1.0);
                             }
-                            if rect.height() > 0.0 {
+                            if rect.height() > 0.0 && visible_height < 1.0 {
                                 self.crop_focus[1] = (self.crop_focus[1]
                                     - response.drag_motion().y / rect.height()
-                                        * (1.0 - visible_height))
+                                        * visible_height / (1.0 - visible_height))
                                     .clamp(0.0, 1.0);
                             }
                             self.crop_dirty = true;
                             ctx.request_repaint();
                         }
-                    if response.drag_stopped() && self.crop_dirty {
-                        self.rebuild_skin_from_source();
-                    }
 
                     let painter = ui.painter();
                     if let (Some(tex), Some((source_width, source_height))) =
@@ -1846,6 +1877,7 @@ impl AirCardApp {
                             source_height,
                             self.crop_focus[0],
                             self.crop_focus[1],
+                            self.crop_zoom / 100.0,
                         );
                         painter.image(
                             tex.id(),
@@ -1877,6 +1909,25 @@ impl AirCardApp {
                     }
                 });
 
+                ui.add_space(8.0);
+                ui.add_enabled_ui(self.source_image.is_some() && !self.is_busy, |ui| {
+                    ui.spacing_mut().interact_size.y = 40.0;
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().slider_width = (ui.available_width() - 175.0).clamp(70.0, 220.0);
+                        let zoom = ui.add(egui::Slider::new(&mut self.crop_zoom, 100.0..=300.0)
+                            .text(language.text("Zoom")).suffix(" %").step_by(1.0));
+                        if zoom.changed() {
+                            self.crop_dirty = true;
+                        }
+                        if ui.button(language.text("Reset crop")).clicked() {
+                            self.crop_zoom = 100.0;
+                            self.crop_focus = [0.5, 0.5];
+                            self.crop_dirty = true;
+                        }
+                    });
+                });
+                ui.label(egui::RichText::new(language.text("Zoom to fill the frame; drag the image to position it."))
+                    .size(11.0).color(md3::ON_SURFACE_VARIANT));
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
                     ui.label(
@@ -1890,7 +1941,7 @@ impl AirCardApp {
                             .color(md3::OUTLINE_VARIANT),
                     );
                     ui.label(
-                        egui::RichText::new("1.585 ratio")
+                        egui::RichText::new(language.text("Wallet format (fixed)"))
                             .size(11.0)
                             .color(md3::ON_SURFACE_VARIANT),
                     );
@@ -1899,7 +1950,9 @@ impl AirCardApp {
                             .size(11.0)
                             .color(md3::OUTLINE_VARIANT),
                     );
-                    if self.skin.is_some() {
+                    if self.crop_dirty {
+                        ui.label(egui::RichText::new(language.text("Adjusting crop...")).size(11.0).color(md3::PRIMARY));
+                    } else if self.skin.is_some() {
                         ui.label(
                             egui::RichText::new(language.text("Ready"))
                                 .size(11.0)
@@ -1923,6 +1976,10 @@ impl AirCardApp {
                 );
             });
         });
+        if self.crop_dirty && !ctx.input(|input| input.pointer.any_down()) {
+            self.rebuild_skin_from_source();
+            ctx.request_repaint();
+        }
     }
 
     fn show_passcode_tab(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {

@@ -15,9 +15,18 @@ pub struct PreparedSkin {
 }
 
 impl PreparedSkin {
-    pub fn from_image_with_focus(image: DynamicImage, focus_x: f32, focus_y: f32) -> Result<Self> {
+    pub fn from_image_with_crop(
+        image: DynamicImage,
+        focus_x: f32,
+        focus_y: f32,
+        zoom: f32,
+    ) -> Result<Self> {
         let (source_width, source_height) = image.dimensions();
-        let cropped = crop_for_card(image, focus_x, focus_y);
+        anyhow::ensure!(
+            source_width > 0 && source_height > 0,
+            "Cannot crop an empty image"
+        );
+        let cropped = crop_for_card(image, focus_x, focus_y, zoom);
         let final_image = cropped.resize_exact(CARD_WIDTH, CARD_HEIGHT, FilterType::Lanczos3);
         let rgba = final_image.to_rgba8();
 
@@ -42,8 +51,10 @@ pub fn crop_uv_for_card(
     source_height: u32,
     focus_x: f32,
     focus_y: f32,
+    zoom: f32,
 ) -> [f32; 4] {
-    let (x, y, width, height) = crop_bounds_for_card(source_width, source_height, focus_x, focus_y);
+    let (x, y, width, height) =
+        crop_bounds_for_card(source_width, source_height, focus_x, focus_y, zoom);
 
     [
         x as f32 / source_width.max(1) as f32,
@@ -124,9 +135,10 @@ pub fn png_to_pdf(png_bytes: &[u8]) -> Result<Vec<u8>> {
     Ok(pdf)
 }
 
-fn crop_for_card(image: DynamicImage, focus_x: f32, focus_y: f32) -> DynamicImage {
+fn crop_for_card(image: DynamicImage, focus_x: f32, focus_y: f32, zoom: f32) -> DynamicImage {
     let (width, height) = image.dimensions();
-    let (x, y, crop_width, crop_height) = crop_bounds_for_card(width, height, focus_x, focus_y);
+    let (x, y, crop_width, crop_height) =
+        crop_bounds_for_card(width, height, focus_x, focus_y, zoom);
     image.crop_imm(x, y, crop_width, crop_height)
 }
 
@@ -135,21 +147,28 @@ fn crop_bounds_for_card(
     height: u32,
     focus_x: f32,
     focus_y: f32,
+    zoom: f32,
 ) -> (u32, u32, u32, u32) {
+    let width = width.max(1);
+    let height = height.max(1);
+    let zoom = if zoom.is_finite() {
+        zoom.clamp(1.0, 3.0) as f64
+    } else {
+        1.0
+    };
     let card_ratio = CARD_WIDTH as f64 / CARD_HEIGHT as f64;
     let source_ratio = width as f64 / height as f64;
 
-    if source_ratio > card_ratio {
-        let crop_width = ((height as f64 * card_ratio).round() as u32).clamp(1, width);
-        let max_x = width.saturating_sub(crop_width);
-        let x = (focus_x.clamp(0.0, 1.0) * max_x as f32).round() as u32;
-        (x, 0, crop_width, height)
+    let (base_width, base_height) = if source_ratio > card_ratio {
+        (height as f64 * card_ratio, height as f64)
     } else {
-        let crop_height = ((width as f64 / card_ratio).round() as u32).clamp(1, height);
-        let max_y = height.saturating_sub(crop_height);
-        let y = (focus_y.clamp(0.0, 1.0) * max_y as f32).round() as u32;
-        (0, y, width, crop_height)
-    }
+        (width as f64, width as f64 / card_ratio)
+    };
+    let crop_width = ((base_width / zoom).round() as u32).clamp(1, width);
+    let crop_height = ((base_height / zoom).round() as u32).clamp(1, height);
+    let x = (focus_x.clamp(0.0, 1.0) * (width - crop_width) as f32).round() as u32;
+    let y = (focus_y.clamp(0.0, 1.0) * (height - crop_height) as f32).round() as u32;
+    (x, y, crop_width, crop_height)
 }
 
 #[cfg(test)]
@@ -175,11 +194,53 @@ mod tests {
 
     #[test]
     fn crop_focus_moves_toward_image_edges() {
-        let left = crop_uv_for_card(2400, 1000, 0.0, 0.5);
-        let right = crop_uv_for_card(2400, 1000, 1.0, 0.5);
+        let left = crop_uv_for_card(2400, 1000, 0.0, 0.5, 1.0);
+        let right = crop_uv_for_card(2400, 1000, 1.0, 0.5, 1.0);
         assert!(left[0] < right[0]);
         assert!(left[2] < right[2]);
         assert_eq!(left[1], 0.0);
         assert_eq!(right[3], 1.0);
+    }
+
+    #[test]
+    fn zoom_removes_image_margins_in_preview_and_export() {
+        let source = image::RgbImage::from_fn(CARD_WIDTH, CARD_HEIGHT, |x, y| {
+            if (300..1200).contains(&x) && (200..800).contains(&y) {
+                image::Rgb([20, 80, 160])
+            } else {
+                image::Rgb([255, 0, 0])
+            }
+        });
+        let uv = crop_uv_for_card(CARD_WIDTH, CARD_HEIGHT, 0.5, 0.5, 2.0);
+        assert!(uv[0] > 0.2 && uv[1] > 0.2 && uv[2] < 0.8 && uv[3] < 0.8);
+        let prepared = PreparedSkin::from_image_with_crop(source.into(), 0.5, 0.5, 2.0).unwrap();
+        let output = image::load_from_memory(&prepared.png).unwrap().to_rgb8();
+        assert_eq!(output.dimensions(), (CARD_WIDTH, CARD_HEIGHT));
+        for (x, y) in [
+            (0, 0),
+            (CARD_WIDTH - 1, 0),
+            (0, CARD_HEIGHT - 1),
+            (CARD_WIDTH - 1, CARD_HEIGHT - 1),
+        ] {
+            assert_eq!(output.get_pixel(x, y).0, [20, 80, 160]);
+        }
+    }
+
+    #[test]
+    fn zoomed_crops_stay_inside_the_source_at_every_edge() {
+        for (width, height) in [(1536, 969), (800, 1600), (2400, 800), (1, 1)] {
+            for zoom in [0.0, 1.0, 1.25, 3.0, 100.0, f32::NAN] {
+                for (fx, fy) in [(0.0, 0.0), (0.5, 0.5), (1.0, 1.0)] {
+                    let (x, y, w, h) = crop_bounds_for_card(width, height, fx, fy, zoom);
+                    assert!(w > 0 && h > 0 && x + w <= width && y + h <= height);
+                    if width > 1 && height > 1 {
+                        assert!(
+                            (w as f64 - h as f64 * CARD_WIDTH as f64 / CARD_HEIGHT as f64).abs()
+                                < 2.0
+                        );
+                    }
+                }
+            }
+        }
     }
 }

@@ -36,7 +36,7 @@ cargo run --locked -- --smoke-test
 
 ## Wallet workflow
 
-There is no built-in artwork gallery. Use **Choose Image…** to import a PNG, JPG, or WebP, drag inside the preview to adjust its crop, and optionally use **Export PNG** to save the 1536×969 result without connecting an iPhone. Each card can use a different image.
+There is no built-in artwork gallery. Use **Choose Image…** to import a PNG, JPG, or WebP. Use **Zoom** below the preview (100–300%) to remove margins inside the source image, then drag the image to position it. **Reset crop** restores 100% and centers the image. The Wallet canvas stays at 1536×969: zoom changes the crop, not its proportions. **Export PNG** and **Apply Card Skin** use the same crop shown in the preview; export works without connecting an iPhone. Each card can use a different image.
 
 1. Make a normal iPhone backup first. This application's artwork backups do not replace a device backup. [Apple Pay information and settings are excluded from normal iPhone backups](https://support.apple.com/en-us/108771).
 2. Connect the unlocked iPhone by USB and establish trust in Finder and on the iPhone.
@@ -78,7 +78,7 @@ Keep the backup directory. Diagnostic logs may contain device/card identifiers; 
 
 ## Development and validation
 
-The temporary-file probe passed on an iPhone 14 Pro Max (`iPhone15,3`) running iOS 26.6: create, overwrite with different bytes, export/read-back, return, a second read after return, and removal. A subsequent Wallet backup successfully exported, validated, saved and returned a real card's `cardBackgroundCombined@2x.png`; exports of its 3x PNG and PDF timed out. The tracked Books state was restored. Applying a replacement design to that card is not yet validated. These checks do not guarantee compatibility with other cards or iOS versions.
+The temporary-file probe passed on an iPhone 14 Pro Max (`iPhone15,3`) running iOS 26.6: create, overwrite with different bytes, export/read-back, return, a second read after return, and removal. A subsequent Wallet backup successfully exported, validated, saved and returned a real card's `cardBackgroundCombined@2x.png`; exports of its 3x PNG and PDF timed out. The tracked Books state was restored. The user subsequently confirmed the replacement design appearing in Wallet with a device screenshot. Payment processing and restoring the original design have not been validated. These checks do not guarantee compatibility with other cards or iOS versions.
 
 ```sh
 cargo fmt --all -- --check
