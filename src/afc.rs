@@ -59,16 +59,26 @@ impl AfcClient {
     }
 
     pub fn exists(&self, path: &str) -> bool {
-        let Ok(c_path) = CString::new(path) else {
-            return false;
-        };
+        self.path_exists(path).unwrap_or(false)
+    }
+
+    pub fn path_exists(&self, path: &str) -> Result<bool> {
+        let c_path = CString::new(path).context("Path contains null byte")?;
         unsafe {
             let mut info: AFCKeyValueRef = ptr::null_mut();
             let status = (self.libs.afc_file_info_open)(self.conn, c_path.as_ptr(), &mut info);
             if !info.is_null() {
                 (self.libs.afc_key_value_close)(info);
             }
-            status == 0
+            match status {
+                0 => Ok(true),
+                8 => Ok(false), // AFC_E_OBJECT_NOT_FOUND, not a connection/access error
+                _ => bail!(
+                    "Could not inspect device path {} (AFC status {})",
+                    path,
+                    status
+                ),
+            }
         }
     }
 
@@ -76,7 +86,9 @@ impl AfcClient {
         let c_path = CString::new(path).ok()?;
         unsafe {
             let mut info: AFCKeyValueRef = ptr::null_mut();
-            if (self.libs.afc_file_info_open)(self.conn, c_path.as_ptr(), &mut info) != 0 || info.is_null() {
+            if (self.libs.afc_file_info_open)(self.conn, c_path.as_ptr(), &mut info) != 0
+                || info.is_null()
+            {
                 return None;
             }
 
@@ -84,14 +96,16 @@ impl AfcClient {
             let mut key: *const std::ffi::c_char = ptr::null();
             let mut val: *const std::ffi::c_char = ptr::null();
 
-            while (self.libs.afc_key_value_read)(info, &mut key, &mut val) == 0 && !key.is_null() && !val.is_null() {
-                if let (Ok(k), Ok(v)) = (CStr::from_ptr(key).to_str(), CStr::from_ptr(val).to_str()) {
-                    if k == "st_size" {
-                        if let Ok(num) = v.parse::<usize>() {
-                            size = Some(num);
-                            break;
-                        }
-                    }
+            while (self.libs.afc_key_value_read)(info, &mut key, &mut val) == 0
+                && !key.is_null()
+                && !val.is_null()
+            {
+                if let (Ok(k), Ok(v)) = (CStr::from_ptr(key).to_str(), CStr::from_ptr(val).to_str())
+                    && k == "st_size"
+                    && let Ok(num) = v.parse::<usize>()
+                {
+                    size = Some(num);
+                    break;
                 }
                 key = ptr::null();
                 val = ptr::null();
@@ -104,13 +118,28 @@ impl AfcClient {
 
     pub fn read_file(&self, path: &str) -> Result<Vec<u8>> {
         let c_path = CString::new(path).context("Path contains null byte")?;
-        let size = self.file_size(path).context("Could not get file size for reading")?;
+        let size = self
+            .file_size(path)
+            .context("Could not get file size for reading")?;
+        anyhow::ensure!(
+            size <= 64 * 1024 * 1024,
+            "Device file exceeds 64 MiB read limit"
+        );
 
         unsafe {
             let mut file: AFCFileRef = 0;
-            let open_status = (self.libs.afc_file_ref_open)(self.conn, c_path.as_ptr(), 1 /* read */, &mut file);
+            let open_status = (self.libs.afc_file_ref_open)(
+                self.conn,
+                c_path.as_ptr(),
+                1, /* read */
+                &mut file,
+            );
             if open_status != 0 || file == 0 {
-                bail!("AFCFileRefOpen failed for {} with code {}", path, open_status);
+                bail!(
+                    "AFCFileRefOpen failed for {} with code {}",
+                    path,
+                    open_status
+                );
             }
 
             let mut data = vec![0u8; size];
@@ -124,9 +153,13 @@ impl AfcClient {
                     data.as_mut_ptr().add(total_read),
                     &mut chunk_len,
                 );
-                if read_status != 0 || chunk_len <= 0 {
+                if read_status != 0 || chunk_len <= 0 || chunk_len as usize > size - total_read {
                     let _ = (self.libs.afc_file_ref_close)(self.conn, file);
-                    bail!("AFCFileRefRead failed after {} bytes with code {}", total_read, read_status);
+                    bail!(
+                        "AFCFileRefRead failed after {} bytes with code {}",
+                        total_read,
+                        read_status
+                    );
                 }
                 total_read += chunk_len as usize;
             }
@@ -144,9 +177,18 @@ impl AfcClient {
         let c_path = CString::new(path).context("Path contains null byte")?;
         unsafe {
             let mut file: AFCFileRef = 0;
-            let open_status = (self.libs.afc_file_ref_open)(self.conn, c_path.as_ptr(), 3 /* write */, &mut file);
+            let open_status = (self.libs.afc_file_ref_open)(
+                self.conn,
+                c_path.as_ptr(),
+                3, /* write */
+                &mut file,
+            );
             if open_status != 0 || file == 0 {
-                bail!("AFCFileRefOpen failed for {} with code {}", path, open_status);
+                bail!(
+                    "AFCFileRefOpen failed for {} with code {}",
+                    path,
+                    open_status
+                );
             }
 
             let write_status = if data.is_empty() {
@@ -157,7 +199,11 @@ impl AfcClient {
 
             let close_status = (self.libs.afc_file_ref_close)(self.conn, file);
             if write_status != 0 || close_status != 0 {
-                bail!("AFC write failed: write_status={}, close_status={}", write_status, close_status);
+                bail!(
+                    "AFC write failed: write_status={}, close_status={}",
+                    write_status,
+                    close_status
+                );
             }
 
             Ok(())
@@ -171,7 +217,11 @@ impl AfcClient {
         let c_path = CString::new(path).context("Path contains null byte")?;
         let status = unsafe { (self.libs.afc_directory_create)(self.conn, c_path.as_ptr()) };
         if status != 0 && !self.exists(path) {
-            bail!("AFCDirectoryCreate failed for {} with code {}", path, status);
+            bail!(
+                "AFCDirectoryCreate failed for {} with code {}",
+                path,
+                status
+            );
         }
         Ok(())
     }
@@ -209,7 +259,11 @@ impl AfcClient {
             let mut dir: AFCDirectoryRef = ptr::null_mut();
             let open_status = (self.libs.afc_directory_open)(self.conn, c_path.as_ptr(), &mut dir);
             if open_status != 0 || dir.is_null() {
-                bail!("AFCDirectoryOpen failed for {} with code {}", path, open_status);
+                bail!(
+                    "AFCDirectoryOpen failed for {} with code {}",
+                    path,
+                    open_status
+                );
             }
 
             let mut entries = Vec::new();
@@ -220,10 +274,11 @@ impl AfcClient {
                 if read_status != 0 || entry_ptr.is_null() {
                     break;
                 }
-                if let Ok(name) = CStr::from_ptr(entry_ptr).to_str() {
-                    if name != "." && name != ".." {
-                        entries.push(name.to_owned());
-                    }
+                if let Ok(name) = CStr::from_ptr(entry_ptr).to_str()
+                    && name != "."
+                    && name != ".."
+                {
+                    entries.push(name.to_owned());
                 }
                 entry_ptr = ptr::null();
             }
@@ -234,6 +289,13 @@ impl AfcClient {
     }
 
     pub fn remove_tree(&self, path: &str) -> Result<()> {
+        let token = path
+            .strip_prefix("airlift-src-")
+            .context("Cleanup must stay inside an AirCard staging directory")?;
+        anyhow::ensure!(
+            token.len() == 32 && token.bytes().all(|b| b.is_ascii_hexdigit()),
+            "Invalid staging directory"
+        );
         self.remove_tree_internal(path, 0)
     }
 
@@ -244,6 +306,10 @@ impl AfcClient {
 
         if let Ok(children) = self.list_directory(path) {
             for child in children {
+                anyhow::ensure!(
+                    !child.contains(['/', '\\']) && child != "." && child != "..",
+                    "Unexpected directory entry during cleanup"
+                );
                 let child_path = format!("{}/{}", path.trim_end_matches('/'), child);
                 self.remove_tree_internal(&child_path, depth + 1)?;
             }

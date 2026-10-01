@@ -22,3 +22,6 @@ Desktop.ini
 # Logs and temp files
 *.log
 *.tmp
+
+# macOS bundles and release archives
+dist/

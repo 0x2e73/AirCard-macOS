@@ -1,128 +1,98 @@
-# AirCard (Windows) 🎴
+# AirCard macOS — experimental port
 
-> **Apple Wallet Card Skinner & Lockscreen Passcode Themer for iOS 18+ (No Jailbreak Required)**  
-> Native Windows client written in Rust. Powered by the `airlift` AirTraffic sync exploit.
+A native Rust client for previewing and changing Apple Wallet card artwork, derived from [Lumid-Off/AirCard-Windows](https://github.com/Lumid-Off/AirCard-Windows). The Apple Silicon macOS build uses Apple's system frameworks and the local `usbmuxd` socket. Windows support is retained; CI also defines an Intel Mac build.
 
----
+**A running Mac app does not establish iPhone compatibility.** This port has not been validated by writing to an iPhone 14 Pro Max / iOS 26.6. Apple's standard AFC file service normally exposes the Media directory, not Wallet's private artwork directory. If the original artwork cannot be read, this version deliberately refuses to apply a skin. There is no “continue without backup” option and no additional exploit to move private files out for backup.
 
-## Features
-- 🎨 **Custom Card Skins:** Assign custom artwork, textures, or bank logos to Apple Pay and Apple Cash cards.
-- 🔢 **Lock Screen Passcode Themes (.passthm):** Apply custom keypad button artwork from popular Cowabunga & Nugget `.passthm` themes directly to iOS lockscreen.
-- ⚡ **100% Native & Lightweight:** Single standalone `aircard.exe` (~7.5 MB). No Python, no Flet, no webview, no bloated runtimes.
-- 🪟 **Material Design 3 Interface:** Clean, modern dark theme built with `egui` and `eframe`.
-- 📱 **Zero-Hassle Card Detection:** Tap any card in your iPhone's Wallet app while connected to detect its hash in real-time via `syslog_relay`.
-- 📶 **USB & WiFi Transport:** Scan card events and apply Wallet or passcode assets through USB or a paired local WiFi connection.
-- 🌐 **English / Simplified Chinese UI:** Switch the interface language from the top bar; the selection is saved locally for future launches.
-- 🔄 **Safe & Reversible:** Complete Books state snapshot and automatic restore engine — preserves original device state and backs up the original Wallet card face before replacing it.
-- 🚀 **Zero Jailbreak:** Utilizes Apple's built-in AirTraffic sync conduit without modifying system partitions or disabling security.
+## Run on macOS
 
----
+### Download the app
 
-## Requirements
-- **Windows 10 / 11 (64-bit)**
-- **Apple Mobile Device Support / 64-bit iTunes** (required for Apple device communication).
-- A Lightning or USB-C cable for the initial trust/pairing setup.
-- For WiFi mode, enable WiFi sync and keep the PC and iPhone on the same local network.
+Download **AirCard-macOS-arm64.zip** from [Releases](https://github.com/0x2e73/AirCard-macOS/releases), extract it, and open **AirCard.app** on an Apple Silicon Mac. Rust and the Xcode Command Line Tools are only needed when building from source. The release is experimental, signed ad hoc, and not notarized by Apple. An Intel binary is not included in this initial release.
 
----
+### Build from source
 
-## ⚠️ Troubleshooting & Driver Repair (If Nothing Works)
+Requirements: macOS 13 or later, the Xcode Command Line Tools, and a current stable Rust toolchain. The local build produces the architecture of the Mac running it. Apple MobileDevice and AirTrafficHost frameworks must be available; no Windows drivers, iTunes installation, or 3uTools are needed on macOS.
 
-> [!TIP]
-> **iPhone not detected, AirTraffic sync hangs, or operation fails?**  
-> Corrupted or conflicting Apple USB drivers on Windows are the #1 root cause.
-> 1. Download and install **[3uTools](https://www.3u.com/)**.
-> 2. **Disconnect your iPhone** from your PC.
-> 3. In 3uTools, go to **Toolbox ➔ Repair Driver**.
-> 4. Click **Repair Now** and wait for the Apple driver reinstallation to finish.
-> 5. Reconnect your unlocked iPhone, tap **Trust**, and launch **AirCard**.
-
----
-
-## Installation
-
-### Pre-built Executable
-1. Download **`aircard.exe`** from [Releases](https://github.com/Lumid-Off/AirCard-Windows/releases).
-2. Connect your iPhone via USB, unlock it, and tap **"Trust this Computer"** if prompted.
-3. Run **`aircard.exe`**. After WiFi sync is enabled, later sessions can work without the cable.
-
----
-
-## WiFi Connection Setup
-1. Connect the iPhone by USB for the initial pairing.
-2. In Apple Devices or iTunes, enable **Show this iPhone when on Wi-Fi** / **Sync with this iPhone over Wi-Fi**.
-3. Apply the setting, then keep the iPhone and PC on the same local network.
-4. In AirCard, click **Refresh** and confirm the device shows a **WiFi** transport.
-5. Disconnect the cable, click **Refresh** again, and select **WiFi only**. Use **Auto (USB preferred)** when automatic fallback is desired.
-
-If both transports are available, **Auto** uses USB first and falls back to WiFi. For a guaranteed end-to-end WiFi route, disconnect the USB cable, click **Refresh**, and then choose **WiFi only**. This is required because Apple's AirTraffic API selects its route by UDID rather than accepting a transport parameter.
-
----
-
-## How to Customize Apple Wallet Cards
-1. Connect your iPhone through USB or paired WiFi and ensure it is unlocked.
-2. In AirCard, stay on the **Wallet** tab and click **Scan**.
-3. On your iPhone:
-   - Open **Apple Wallet** (or double-click the Side/Power button).
-   - Tap the card you want to customize.
-   - AirCard intercepts and saves the card hash automatically. Click **Stop**.
-4. Click **Choose Image...** to pick your artwork (PNG, JPG, or WebP — drag inside the preview to position the crop, then scale it to `1536 × 969`).
-5. Click **Apply Card Skin**.
-6. Force-close the **Wallet** app on your iPhone from the App Switcher (swipe up from bottom, then swipe Wallet away) and reopen Wallet to see your new card!
-7. The first apply stores a local backup of the original card face. Use **Restore Original** later to write it back and invalidate Wallet's cached artwork.
-
----
-
-## How to Apply Lockscreen Passcode Themes (.passthm)
-1. Switch to the **Passcode** tab in AirCard.
-2. Click **Choose .passthm...** and select any `.passthm` package (Cowabunga or Nugget).
-3. Select your target iOS version cache:
-   - **Auto (TelephonyUI-10)** — iOS 18+ (Default)
-   - **TelephonyUI-9** — iOS 16 - 17
-   - **TelephonyUI-8** — Legacy iOS
-4. Click **Apply Passcode Theme**.
-5. Lock your iPhone screen or open Phone dialer to see your new custom passcode keypad buttons!
-
-> [!IMPORTANT]
-> **Turn OFF Bold Text:**  
-> On your iPhone, go to **Settings ➔ Display & Brightness** and make sure **Bold Text** is turned **OFF**. If Bold Text is enabled, iOS ignores cached dialer button graphics and renders system vector fonts instead.
-
----
-
-## Building from Source
-
-Prerequisites: [Rust toolchain](https://rustup.rs/) (`stable-x86_64-pc-windows-msvc`).
-
-```powershell
-# Clone the repository
-git clone https://github.com/Lumid-Off/AirCard-Windows.git
-cd AirCard-Windows
-
-# Run tests
-cargo test
-
-# Build release binary
-cargo build --release
+```sh
+git clone https://github.com/0x2e73/AirCard-macOS.git
+cd AirCard-macOS
+cargo test --locked
+./scripts/package-macos.sh
+open dist/AirCard.app
 ```
 
-The compiled binary will be in `target\release\aircard.exe`.
+The resulting `dist/AirCard.app` is signed ad hoc for local use, not signed with an Apple Developer identity or notarized. macOS compatibility below the version used for local validation and Intel execution still need testing.
 
----
+Useful checks that do not contact an iPhone:
 
-## Contributors
-- **[@Lumid-Off](https://github.com/Lumid-Off)** (Windows Native Rust Port & Maintainer) — [GitHub](https://github.com/Lumid-Off) · [Twitter / X](https://x.com/LumidOff)
-- **[@mak5er](https://github.com/mak5er)** (Original macOS App & Exploit Research) — [GitHub](https://github.com/mak5er) · [Twitter / X](https://x.com/mak5er)
-- **[AirLift](https://github.com/0xjohnnydev/airlift)** by **[0xjohnny (@0xjohnnydev)](https://github.com/0xjohnnydev)**: Original AirTraffic/ATAirlock sandbox escape and proof of concept underlying `AirliftFFI`.
+```sh
+cargo run --locked -- --check-runtime
+cargo run --locked -- --preview
+cargo run --locked -- --smoke-test
+```
 
-## Credits
-- Core exploit based on `airlift` (AirTraffic sync escape).
-- Theme format inspired by [Cowabunga](https://github.com/leminlimez/Cowabunga) and [Nugget](https://github.com/leminlimez/Nugget).
+`--check-runtime` loads the system libraries and checks every required symbol. `--preview` opens the UI without device discovery or syslog access. `--smoke-test` opens a preview window and closes it automatically; set `AIRCARD_SMOKE_SCREENSHOT` to a PNG path to save a capture of that window using the app's renderer.
 
-## Support
+## Wallet workflow
 
-If you find AirCard useful, you can support future development:
+There is no built-in artwork gallery. Use **Choose Image…** to import a PNG, JPG, or WebP, drag inside the preview to adjust its crop, and optionally use **Export PNG** to save the 1536×969 result without connecting an iPhone. Each card can use a different image.
 
-- **TON**: `UQB5jbOhep98IvgKjCIsJ1hHGRh2iWkacAZh9jW2DMIVSWZm`
-- **USDT (TRC20)**: `TLiVnkPZ7mVKwCD9RfE28uVTFk6sD6rux2`
-- **USDT / BNB (BEP20)**: `0x8EA94e79e47FafBCE10E65342D875c86d1019541`
+1. Make a normal iPhone backup first. This application's artwork backups do not replace a device backup. [Apple Pay information and settings are excluded from normal iPhone backups](https://support.apple.com/en-us/108771).
+2. Connect the unlocked iPhone by USB and establish trust in Finder and on the iPhone.
+3. Open AirCard and refresh devices. Choose the correct iPhone and transport.
+4. Click **Scan**, open Wallet on the iPhone, and select the intended card. Stop scanning when its identifier appears.
+5. Click **Back Up Original**. This only reads device files and saves them on the computer. It must obtain all three original artwork files (`@3x.png`, `@2x.png`, and `.pdf`) and verify the local backup. A card that lacks any of these files is also blocked; supporting absent original assets safely requires a different restore mechanism.
+6. If backup succeeds, choose an image, adjust the crop, and click **Apply Card Skin**. Each card has its own backup and can be styled separately.
+7. After a successful verified write, close and reopen Wallet. **Restore Original** uses the saved original assets.
 
+If backup is refused, stop: this device/card cannot currently be modified with this port's backup requirement. Do not delete recovery files or substitute an unrelated card's backup to enable writes.
+
+## Safety changes
+
+- Original artwork is stored in a complete versioned manifest bound to the device and canonical card identifier. Existing backups are never overwritten. The original PNGs must decode and the PDF must have a header and end marker; this is not a full PDF parser or a guarantee that Apple will accept the restored file.
+- Backups are written atomically, synchronized to disk, and read back before use. Incomplete legacy backups from the Windows version are not accepted.
+- Books sync files are saved to a durable recovery journal **before** any staging or device write. The snapshot is limited to the six tracked Books files; it is not a complete backup of the Books library.
+- A pending recovery journal blocks subsequent writes. **Restore Books** restores and verifies those tracked files, then clears the journal. It does not undo a partially changed card face; use **Restore Original** separately afterwards. Failed-operation staging files may remain on the phone.
+- AirTraffic runs in a bounded child process, which is stopped and reaped on timeout before cleanup. A separate lock prevents recovery from racing a helper that outlived the UI. Already-dispatched iPhone operations cannot be cancelled with certainty.
+- Cross-process locks serialize changes per iPhone. Write destinations are restricted to known Wallet artwork/cache names, and path components are validated.
+- No automatic write retries after partial failure. Artwork and Books restoration are checked by reading bytes back. Cache failures are reported instead of being silently ignored.
+- Passcode themes can be imported and previewed; **keypad writes are disabled** until there is a complete backup/restore implementation. Theme archive sizes are bounded.
+
+These changes reduce avoidable failures; they do not make the underlying AirTraffic exploit safe or transactional. A disconnect, framework incompatibility, concurrent Finder sync, or device crash can still leave partial changes. Close other device-management/sync apps before a deliberate write and keep an alternative way to pay.
+
+## Local files
+
+On macOS: `~/Library/Application Support/AirCard/`.
+On Windows: `%LOCALAPPDATA%\AirCard\`.
+
+- `cards.json`: discovered card names and identifiers.
+- `settings.json`: UI language.
+- `wallet-backups/v2/`: immutable original artwork manifests.
+- `recovery/`: unfinished Books recovery journals.
+- `locks/`: operation lock files (the OS releases locks when the owning process exits).
+
+Keep the backup directory. Diagnostic logs may contain device/card identifiers; review them before sharing.
+
+## Development and validation
+
+```sh
+cargo fmt --all -- --check
+cargo test --locked
+cargo check --locked
+./scripts/package-macos.sh
+./dist/AirCard.app/Contents/MacOS/aircard --check-runtime
+AIRCARD_SMOKE_SCREENSHOT="$PWD/dist/smoke-test.png" ./dist/AirCard.app/Contents/MacOS/aircard --smoke-test
+```
+
+Default tests use temporary files and do not contact an iPhone. Four inherited integration tests are explicitly ignored because they access real devices or the user's card database. Only run ignored tests deliberately on a test setup. CI builds artifacts for Apple Silicon, Intel Mac, and Windows, without publishing releases automatically.
+
+## Credits and license
+
+MIT; see [LICENSE](LICENSE). This fork retains the original project's license and history.
+
+- [Lumid-Off/AirCard-Windows](https://github.com/Lumid-Off/AirCard-Windows): Rust/egui client and Windows port.
+- [Mak5er/AirCard](https://github.com/Mak5er/AirCard): original macOS project and Wallet research.
+- [0xjohnnydev/airlift](https://github.com/0xjohnnydev/airlift): AirTraffic/ATAirlock research and protocol reference.
+
+This is an unofficial experimental fork, not an Apple or Revolut product.

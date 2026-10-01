@@ -9,16 +9,6 @@ use regex::Regex;
 
 use crate::device::{ActiveDeviceSession, ConnectionMode};
 
-#[cfg(windows)]
-unsafe extern "system" {
-    fn setsockopt(s: usize, level: i32, optname: i32, optval: *const i8, optlen: i32) -> i32;
-}
-
-#[cfg(windows)]
-const SOL_SOCKET: i32 = 0xffff;
-#[cfg(windows)]
-const SO_RCVTIMEO: i32 = 0x1006;
-
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SavedCard {
     pub hash: String,
@@ -26,9 +16,7 @@ pub struct SavedCard {
 }
 
 pub fn get_cards_storage_path() -> PathBuf {
-    let local_app_data = std::env::var("LOCALAPPDATA")
-        .unwrap_or_else(|_| r"C:\Users\Default\AppData\Local".to_string());
-    let dir = PathBuf::from(local_app_data).join("AirCard");
+    let dir = crate::platform::data_dir();
     let _ = fs::create_dir_all(&dir);
     dir.join("cards.json")
 }
@@ -42,12 +30,16 @@ pub fn is_valid_card_hash(h: &str) -> bool {
     }
 
     // Must be base64 alphabet characters
-    if !trimmed.chars().all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '-' || c == '_' || c == '=') {
+    if !trimmed.chars().all(|c| {
+        c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '-' || c == '_' || c == '='
+    }) {
         return false;
     }
 
     // Reject strings with multiple underscores or hyphens (typical of system asset/bundle names)
-    if trimmed.chars().filter(|&c| c == '_').count() > 1 || trimmed.chars().filter(|&c| c == '-').count() > 2 {
+    if trimmed.chars().filter(|&c| c == '_').count() > 1
+        || trimmed.chars().filter(|&c| c == '-').count() > 2
+    {
         return false;
     }
 
@@ -79,15 +71,15 @@ pub fn is_valid_card_hash(h: &str) -> bool {
     }
 
     // '=' can only appear at the end
-    if let Some(pos) = trimmed.find('=') {
-        if pos < len - 2 {
-            return false;
-        }
+    if let Some(pos) = trimmed.find('=')
+        && pos < len - 2
+    {
+        return false;
     }
 
     // Normalize URL-safe base64 and pad
     let mut b64 = trimmed.replace('-', "+").replace('_', "/");
-    while b64.len() % 4 != 0 {
+    while !b64.len().is_multiple_of(4) {
         b64.push('=');
     }
 
@@ -117,7 +109,11 @@ pub fn is_valid_card_hash(h: &str) -> bool {
                 return false;
             }
 
-            if DUMMY_HASHES.contains(&trimmed) || DUMMY_HASHES.iter().any(|d| d.trim_end_matches('=') == trimmed) {
+            if DUMMY_HASHES.contains(&trimmed)
+                || DUMMY_HASHES
+                    .iter()
+                    .any(|d| d.trim_end_matches('=') == trimmed)
+            {
                 return false;
             }
             return true;
@@ -129,13 +125,16 @@ pub fn is_valid_card_hash(h: &str) -> bool {
 
 pub fn load_saved_cards() -> Vec<SavedCard> {
     let path = get_cards_storage_path();
-    if let Ok(content) = fs::read_to_string(&path) {
-        if let Ok(cards) = serde_json::from_str::<Vec<SavedCard>>(&content) {
-            let valid_cards: Vec<SavedCard> = cards.into_iter().filter(|c| is_valid_card_hash(&c.hash)).collect();
-            // Automatically purge corrupted or garbage entries from disk
-            save_saved_cards(&valid_cards);
-            return valid_cards;
-        }
+    if let Ok(content) = fs::read_to_string(&path)
+        && let Ok(cards) = serde_json::from_str::<Vec<SavedCard>>(&content)
+    {
+        let valid_cards: Vec<SavedCard> = cards
+            .into_iter()
+            .filter(|c| is_valid_card_hash(&c.hash))
+            .collect();
+        // Automatically purge corrupted or garbage entries from disk
+        save_saved_cards(&valid_cards);
+        return valid_cards;
     }
     Vec::new()
 }
@@ -197,8 +196,10 @@ const DUMMY_HASHES: &[&str] = &[
 use std::sync::LazyLock;
 
 static DESC_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)(?:description|localizedDescription|passName|title)\s*[:=]\s*['"]([^'"]+)['"]"#)
-        .unwrap()
+    Regex::new(
+        r#"(?i)(?:description|localizedDescription|passName|title)\s*[:=]\s*['"]([^'"]+)['"]"#,
+    )
+    .unwrap()
 });
 
 static CARD_REGEXES: LazyLock<Vec<Regex>> = LazyLock::new(|| {
@@ -211,12 +212,12 @@ static CARD_REGEXES: LazyLock<Vec<Regex>> = LazyLock::new(|| {
 });
 
 pub fn extract_card_name_from_line(line: &str) -> Option<String> {
-    if let Some(caps) = DESC_RE.captures(line) {
-        if let Some(m) = caps.get(1) {
-            let name = m.as_str().trim();
-            if name.len() > 1 && !name.to_lowercase().contains("<private>") {
-                return Some(name.to_string());
-            }
+    if let Some(caps) = DESC_RE.captures(line)
+        && let Some(m) = caps.get(1)
+    {
+        let name = m.as_str().trim();
+        if name.len() > 1 && !name.to_lowercase().contains("<private>") {
+            return Some(name.to_string());
         }
     }
     None
@@ -230,16 +231,20 @@ pub fn extract_card_hash_from_line(line: &str) -> Option<String> {
     }
 
     for r in CARD_REGEXES.iter() {
-        if let Some(caps) = r.captures(line) {
-            if let Some(m) = caps.get(1) {
-                let h = m.as_str().trim().trim_matches(['\'', '"']).trim_end_matches(['.', ',']);
-                if is_valid_card_hash(h) {
-                    let mut norm = h.to_string();
-                    if norm.len() == 27 {
-                        norm.push('=');
-                    }
-                    return Some(norm);
+        if let Some(caps) = r.captures(line)
+            && let Some(m) = caps.get(1)
+        {
+            let h = m
+                .as_str()
+                .trim()
+                .trim_matches(['\'', '"'])
+                .trim_end_matches(['.', ',']);
+            if is_valid_card_hash(h) {
+                let mut norm = h.to_string();
+                if norm.len() == 27 {
+                    norm.push('=');
                 }
+                return Some(norm);
             }
         }
     }
@@ -268,7 +273,8 @@ where
     ));
     let libs = &session.libs;
     log("Starting com.apple.syslog_relay service on device...".to_string());
-    let service_conn = session.start_service("com.apple.syslog_relay")
+    let service_conn = session
+        .start_service("com.apple.syslog_relay")
         .context("Failed to start com.apple.syslog_relay service")?;
 
     let raw_socket = unsafe { (libs.amd_service_connection_get_socket)(service_conn) };
@@ -277,17 +283,13 @@ where
         anyhow::bail!("Invalid syslog socket");
     }
 
-    // Set socket receive timeout
-    #[cfg(windows)]
-    unsafe {
-        let timeout_ms: u32 = 500;
-        setsockopt(
-            raw_socket as usize,
-            SOL_SOCKET,
-            SO_RCVTIMEO,
-            &timeout_ms as *const u32 as *const i8,
-            std::mem::size_of::<u32>() as i32,
-        );
+    if let Err(error) =
+        crate::platform::set_receive_timeout(raw_socket, std::time::Duration::from_millis(500))
+    {
+        unsafe {
+            (libs.amd_service_connection_invalidate)(service_conn);
+        }
+        return Err(error);
     }
 
     log("Syslog relay established. Listening for Wallet & PassKit events...".to_string());
@@ -298,11 +300,7 @@ where
 
     while !stop_flag.load(Ordering::Relaxed) {
         let bytes_read = unsafe {
-            (libs.amd_service_connection_receive)(
-                service_conn,
-                buffer.as_mut_ptr(),
-                buffer.len(),
-            )
+            (libs.amd_service_connection_receive)(service_conn, buffer.as_mut_ptr(), buffer.len())
         };
 
         if bytes_read > 0 {
@@ -324,6 +322,9 @@ where
                         line_acc.clear();
                     }
                 } else if b != b'\r' {
+                    if line_acc.len() >= 1024 * 1024 {
+                        line_acc.clear();
+                    }
                     line_acc.push(b);
                 }
             }
@@ -403,19 +404,29 @@ mod tests {
         ];
 
         for g in garbage {
-            assert!(!is_valid_card_hash(g), "Expected {} to be rejected as card hash", g);
+            assert!(
+                !is_valid_card_hash(g),
+                "Expected {} to be rejected as card hash",
+                g
+            );
         }
     }
 
     #[test]
+    #[ignore = "reads and rewrites the real user card database"]
     fn test_saved_cards_purging() {
         let loaded = load_saved_cards();
         for card in &loaded {
-            assert!(is_valid_card_hash(&card.hash), "Invalid hash was not purged: {}", card.hash);
+            assert!(
+                is_valid_card_hash(&card.hash),
+                "Invalid hash was not purged: {}",
+                card.hash
+            );
         }
     }
 
     #[test]
+    #[ignore = "requires a paired iPhone; opens a device service"]
     fn test_syslog_service_receive() {
         let session = match ActiveDeviceSession::open(None, ConnectionMode::Auto) {
             Ok(s) => s,
@@ -425,22 +436,20 @@ mod tests {
             }
         };
         let libs = &session.libs;
-        let conn = session.start_service("com.apple.syslog_relay").expect("start syslog_relay");
+        let conn = session
+            .start_service("com.apple.syslog_relay")
+            .expect("start syslog_relay");
         let raw_socket = unsafe { (libs.amd_service_connection_get_socket)(conn) };
-        unsafe {
-            let timeout_ms: u32 = 500;
-            setsockopt(
-                raw_socket as usize,
-                SOL_SOCKET,
-                SO_RCVTIMEO,
-                &timeout_ms as *const u32 as *const i8,
-                std::mem::size_of::<u32>() as i32,
-            );
-        }
+        crate::platform::set_receive_timeout(raw_socket, std::time::Duration::from_millis(500))
+            .unwrap();
         let mut buf = [0u8; 4096];
         let start = std::time::Instant::now();
         let n = unsafe { (libs.amd_service_connection_receive)(conn, buf.as_mut_ptr(), buf.len()) };
-        println!("AMDServiceConnectionReceive returned: {} in {:?}", n, start.elapsed());
+        println!(
+            "AMDServiceConnectionReceive returned: {} in {:?}",
+            n,
+            start.elapsed()
+        );
         unsafe { (libs.amd_service_connection_invalidate)(conn) };
     }
 }

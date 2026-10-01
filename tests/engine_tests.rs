@@ -1,20 +1,6 @@
 #[test]
-fn test_hex_token() {
-    let mut bytes = [0u8; 10];
-    unsafe {
-        #[link(name = "bcrypt")]
-        unsafe extern "system" {
-            fn BCryptGenRandom(
-                hAlgorithm: *mut std::ffi::c_void,
-                pbBuffer: *mut u8,
-                cbBuffer: u32,
-                dwFlags: u32,
-            ) -> i32;
-        }
-        let status = BCryptGenRandom(std::ptr::null_mut(), bytes.as_mut_ptr(), 10, 2);
-        assert_eq!(status, 0);
-    }
-    let token: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
-    assert_eq!(token.len(), 20);
-    assert!(token.chars().all(|c| c.is_ascii_hexdigit()));
+fn system_randomness_is_available() {
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes).expect("OS random source is required before any device write");
+    assert!(bytes.iter().any(|b| *b != 0));
 }

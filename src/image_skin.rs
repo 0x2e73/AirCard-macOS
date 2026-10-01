@@ -15,11 +15,7 @@ pub struct PreparedSkin {
 }
 
 impl PreparedSkin {
-    pub fn from_image_with_focus(
-        image: DynamicImage,
-        focus_x: f32,
-        focus_y: f32,
-    ) -> Result<Self> {
+    pub fn from_image_with_focus(image: DynamicImage, focus_x: f32, focus_y: f32) -> Result<Self> {
         let (source_width, source_height) = image.dimensions();
         let cropped = crop_for_card(image, focus_x, focus_y);
         let final_image = cropped.resize_exact(CARD_WIDTH, CARD_HEIGHT, FilterType::Lanczos3);
@@ -47,12 +43,7 @@ pub fn crop_uv_for_card(
     focus_x: f32,
     focus_y: f32,
 ) -> [f32; 4] {
-    let (x, y, width, height) = crop_bounds_for_card(
-        source_width,
-        source_height,
-        focus_x,
-        focus_y,
-    );
+    let (x, y, width, height) = crop_bounds_for_card(source_width, source_height, focus_x, focus_y);
 
     [
         x as f32 / source_width.max(1) as f32,
@@ -63,8 +54,8 @@ pub fn crop_uv_for_card(
 }
 
 pub fn png_to_pdf(png_bytes: &[u8]) -> Result<Vec<u8>> {
-    let img = image::load_from_memory(png_bytes)
-        .context("Failed to decode image for PDF conversion")?;
+    let img =
+        image::load_from_memory(png_bytes).context("Failed to decode image for PDF conversion")?;
     let rgb = img.to_rgb8();
     let width = rgb.width();
     let height = rgb.height();
@@ -106,7 +97,9 @@ pub fn png_to_pdf(png_bytes: &[u8]) -> Result<Vec<u8>> {
     offsets.push(pdf.len());
     let image_header = format!(
         "5 0 obj\n<< /Type /XObject /Subtype /Image /Width {} /Height {} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode /Length {} >>\nstream\n",
-        width, height, compressed_stream.len()
+        width,
+        height,
+        compressed_stream.len()
     );
     pdf.extend_from_slice(image_header.as_bytes());
     pdf.extend_from_slice(&compressed_stream);
@@ -133,8 +126,7 @@ pub fn png_to_pdf(png_bytes: &[u8]) -> Result<Vec<u8>> {
 
 fn crop_for_card(image: DynamicImage, focus_x: f32, focus_y: f32) -> DynamicImage {
     let (width, height) = image.dimensions();
-    let (x, y, crop_width, crop_height) =
-        crop_bounds_for_card(width, height, focus_x, focus_y);
+    let (x, y, crop_width, crop_height) = crop_bounds_for_card(width, height, focus_x, focus_y);
     image.crop_imm(x, y, crop_width, crop_height)
 }
 
@@ -168,7 +160,9 @@ mod tests {
     fn test_png_to_pdf_conversion() {
         let dummy = DynamicImage::new_rgb8(10, 10);
         let mut png = Vec::new();
-        dummy.write_to(&mut Cursor::new(&mut png), ImageFormat::Png).unwrap();
+        dummy
+            .write_to(&mut Cursor::new(&mut png), ImageFormat::Png)
+            .unwrap();
 
         let pdf = png_to_pdf(&png).expect("png_to_pdf failed");
         assert!(pdf.starts_with(b"%PDF-1.4"));

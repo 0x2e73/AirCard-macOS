@@ -1,15 +1,16 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
+#[cfg(windows)]
 use std::net::{SocketAddr, TcpStream};
+#[cfg(target_os = "macos")]
+use std::os::unix::net::UnixStream;
 use std::ptr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 
-use crate::apple::{
-    AMDServiceConnectionRef, AMDeviceRef, AppleLibraries, get_apple_libraries,
-};
+use crate::apple::{AMDServiceConnectionRef, AMDeviceRef, AppleLibraries, get_apple_libraries};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum DeviceTransport {
@@ -81,7 +82,10 @@ impl DeviceInfo {
     }
 
     pub fn supports(&self, mode: ConnectionMode) -> bool {
-        self.transports.iter().copied().any(|transport| mode.accepts(transport))
+        self.transports
+            .iter()
+            .copied()
+            .any(|transport| mode.accepts(transport))
     }
 
     pub fn transport_summary(&self) -> String {
@@ -115,21 +119,39 @@ pub struct UsbmuxDeviceEntry {
 }
 
 pub fn query_usbmux_devices() -> Result<Vec<UsbmuxDeviceEntry>> {
+    #[cfg(windows)]
     let addr: SocketAddr = "127.0.0.1:27015".parse().unwrap();
+    #[cfg(windows)]
     let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(2))
         .context("Could not connect to Apple Mobile Device Service (usbmuxd) at 127.0.0.1:27015. Please ensure iTunes or Apple Mobile Device Support is installed and the service is running.")?;
+    #[cfg(target_os = "macos")]
+    let mut stream = UnixStream::connect("/var/run/usbmuxd").context(
+        "Could not connect to macOS usbmuxd. Connect and trust the iPhone in Finder first",
+    )?;
 
     stream.set_read_timeout(Some(Duration::from_secs(3)))?;
     stream.set_write_timeout(Some(Duration::from_secs(3)))?;
 
     let mut req_dict = HashMap::new();
-    req_dict.insert("MessageType".to_string(), plist::Value::String("ListDevices".to_string()));
-    req_dict.insert("ClientVersionString".to_string(), plist::Value::String("aircard".to_string()));
-    req_dict.insert("ProgName".to_string(), plist::Value::String("aircard".to_string()));
+    req_dict.insert(
+        "MessageType".to_string(),
+        plist::Value::String("ListDevices".to_string()),
+    );
+    req_dict.insert(
+        "ClientVersionString".to_string(),
+        plist::Value::String("aircard".to_string()),
+    );
+    req_dict.insert(
+        "ProgName".to_string(),
+        plist::Value::String("aircard".to_string()),
+    );
 
     let mut plist_bytes = Vec::new();
-    plist::to_writer_xml(&mut plist_bytes, &plist::Value::Dictionary(req_dict.into_iter().collect()))
-        .context("Failed to serialize ListDevices request")?;
+    plist::to_writer_xml(
+        &mut plist_bytes,
+        &plist::Value::Dictionary(req_dict.into_iter().collect()),
+    )
+    .context("Failed to serialize ListDevices request")?;
 
     let length = (plist_bytes.len() + 16) as u32;
     let version = 1u32;
@@ -150,8 +172,13 @@ pub fn query_usbmux_devices() -> Result<Vec<UsbmuxDeviceEntry>> {
     let mut resp_header = [0u8; 16];
     stream.read_exact(&mut resp_header)?;
 
-    let resp_len = u32::from_le_bytes([resp_header[0], resp_header[1], resp_header[2], resp_header[3]]) as usize;
-    if resp_len < 16 {
+    let resp_len = u32::from_le_bytes([
+        resp_header[0],
+        resp_header[1],
+        resp_header[2],
+        resp_header[3],
+    ]) as usize;
+    if !(16..=4 * 1024 * 1024).contains(&resp_len) {
         bail!("Invalid usbmux response length: {}", resp_len);
     }
 
@@ -161,36 +188,40 @@ pub fn query_usbmux_devices() -> Result<Vec<UsbmuxDeviceEntry>> {
     let val = plist::Value::from_reader(std::io::Cursor::new(payload))
         .context("Failed to parse usbmux ListDevices response plist")?;
 
-    let root_dict = val.as_dictionary().context("Expected dictionary in usbmux response")?;
-    let device_list = root_dict.get("DeviceList").and_then(|v| v.as_array()).context("Expected DeviceList array in usbmux response")?;
+    let root_dict = val
+        .as_dictionary()
+        .context("Expected dictionary in usbmux response")?;
+    let device_list = root_dict
+        .get("DeviceList")
+        .and_then(|v| v.as_array())
+        .context("Expected DeviceList array in usbmux response")?;
 
     let mut result = Vec::new();
     for entry in device_list {
-        if let Some(d) = entry.as_dictionary() {
-            if let Some(props_val) = d.get("Properties") {
-                if let Some(props_dict) = props_val.as_dictionary() {
-                    let serial = props_dict
-                        .get("SerialNumber")
-                        .and_then(|v| v.as_string())
-                        .unwrap_or_default()
-                        .to_string();
-                    let connection_type = props_dict
-                        .get("ConnectionType")
-                        .and_then(|v| v.as_string())
-                        .unwrap_or("USB");
-                    let transport = DeviceTransport::from_usbmux(connection_type);
+        if let Some(d) = entry.as_dictionary()
+            && let Some(props_val) = d.get("Properties")
+            && let Some(props_dict) = props_val.as_dictionary()
+        {
+            let serial = props_dict
+                .get("SerialNumber")
+                .and_then(|v| v.as_string())
+                .unwrap_or_default()
+                .to_string();
+            let connection_type = props_dict
+                .get("ConnectionType")
+                .and_then(|v| v.as_string())
+                .unwrap_or("USB");
+            let transport = DeviceTransport::from_usbmux(connection_type);
 
-                    let mut props_binary = Vec::new();
-                    plist::to_writer_binary(&mut props_binary, props_val)
-                        .context("Failed to serialize device properties to binary plist")?;
+            let mut props_binary = Vec::new();
+            plist::to_writer_binary(&mut props_binary, props_val)
+                .context("Failed to serialize device properties to binary plist")?;
 
-                    result.push(UsbmuxDeviceEntry {
-                        udid: serial,
-                        transport,
-                        properties_plist: props_binary,
-                    });
-                }
-            }
+            result.push(UsbmuxDeviceEntry {
+                udid: serial,
+                transport,
+                properties_plist: props_binary,
+            });
         }
     }
 
@@ -253,14 +284,17 @@ pub fn list_connected_devices() -> Result<Vec<DeviceInfo>> {
             (libs.cf_release)(dev);
         }
 
-        merge_device_info(&mut result, DeviceInfo {
-            udid: entry.udid,
-            name,
-            product_type,
-            ios_version,
-            build_version,
-            transports: vec![entry.transport],
-        });
+        merge_device_info(
+            &mut result,
+            DeviceInfo {
+                udid: entry.udid,
+                name,
+                product_type,
+                ios_version,
+                build_version,
+                transports: vec![entry.transport],
+            },
+        );
     }
 
     Ok(result)
@@ -276,7 +310,9 @@ fn merge_device_info(devices: &mut Vec<DeviceInfo>, incoming: DeviceInfo) {
                 existing.transports.push(transport);
             }
         }
-        existing.transports.sort_by_key(|transport| transport_priority(*transport));
+        existing
+            .transports
+            .sort_by_key(|transport| transport_priority(*transport));
 
         if existing.name == "iPhone" && incoming.name != "iPhone" {
             existing.name = incoming.name;
@@ -319,13 +355,10 @@ fn ordered_candidates(
     entries
 }
 
-pub fn ensure_transport_available(
-    udid: &str,
-    transport: DeviceTransport,
-) -> Result<()> {
-    let available = query_usbmux_devices()?.into_iter().any(|entry| {
-        entry.udid.eq_ignore_ascii_case(udid) && entry.transport == transport
-    });
+pub fn ensure_transport_available(udid: &str, transport: DeviceTransport) -> Result<()> {
+    let available = query_usbmux_devices()?
+        .into_iter()
+        .any(|entry| entry.udid.eq_ignore_ascii_case(udid) && entry.transport == transport);
     if available {
         return Ok(());
     }
@@ -410,7 +443,9 @@ impl ActiveDeviceSession {
                 if transport == DeviceTransport::Wifi {
                     (libs.am_device_disconnect)(device);
                     (libs.cf_release)(device);
-                    bail!("WiFi device is not paired. Connect it over USB once and trust this computer first");
+                    bail!(
+                        "WiFi device is not paired. Connect it over USB once and trust this computer first"
+                    );
                 }
                 (libs.am_device_pair)(device);
             }
@@ -460,7 +495,11 @@ impl ActiveDeviceSession {
             )
         };
         if status != 0 || service_conn.is_null() {
-            bail!("AMDeviceSecureStartService('{}') failed with code {}", service_name, status);
+            bail!(
+                "AMDeviceSecureStartService('{}') failed with code {}",
+                service_name,
+                status
+            );
         }
         Ok(service_conn)
     }
@@ -528,6 +567,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires Apple device services; not an offline unit test"]
     fn test_usbmux_query() {
         match query_usbmux_devices() {
             Ok(devs) => {
@@ -543,6 +583,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires Apple device services; not an offline unit test"]
     fn test_list_connected_devices() {
         match list_connected_devices() {
             Ok(devs) => {
@@ -551,7 +592,9 @@ mod tests {
                 }
             }
             Err(e) => {
-                println!("Apple Mobile Device Support not installed on this host (expected in CI): {e}");
+                println!(
+                    "Apple Mobile Device Support not installed on this host (expected in CI): {e}"
+                );
             }
         }
     }
